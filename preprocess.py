@@ -29,9 +29,9 @@ tf.flags.DEFINE_string("train_annot_dir", "./train_annot", "base directory for d
 def cal_rel_coord((x, y), (grid_x_size, grid_y_size)):
   
   x_loc = x//grid_x_size
-  x = float(x - x_loc* grid_x_size)/grid_x_size
+  x = float(x - x_loc* grid_x_size)/grid_x_size - 0.5
   y_loc = y//grid_y_size
-  y = float(y - y_loc* grid_y_size)/grid_y_size
+  y = float(y - y_loc* grid_y_size)/grid_y_size - 0.5
 
   return (x, y), (int(x_loc),int( y_loc))
 
@@ -83,8 +83,8 @@ def main(args):
 
       jpg_file = os.path.join(img_path, filename + '.jpg')
       img = cv2.imread(jpg_file)
-      vis = img.copy() 
-     
+      vis = img.copy()
+
       vis_grid = np.zeros((FLAGS.img_size, FLAGS.img_size, 3), np.uint8)
       resized_img = cv2.resize(img, (FLAGS.img_size, FLAGS.img_size))
 
@@ -118,7 +118,7 @@ def main(args):
 
         if not (x_loc, y_loc) in _annot_data.keys():
           _annot_data[(x_loc, y_loc)] = (idx, [])
-       
+
         if _annot_data[(x_loc, y_loc)][0] == idx:
           _annot_data[(x_loc, y_loc)][1].append((1.0, x, y, bw, bh))
 
@@ -126,12 +126,12 @@ def main(args):
 
           grid_b = (int(FLAGS.grid_size*x_loc), int(FLAGS.grid_size*y_loc))
           grid_e = (int(FLAGS.grid_size*(x_loc+1)), int(FLAGS.grid_size*(y_loc+1)))
-          
-          vis_grid = cv2.rectangle(vis_grid, grid_b, grid_e, color, -1) 
+
+          vis_grid = cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
           vis = cv2.rectangle(vis, b, e, color, 5)
           vis = cv2.putText(vis, annot['name'], b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
           vis = cv2.circle(vis, (int(cx), int(cy)), 4, color, -1)
-          
+
           resized_img = cv2.circle(resized_img, (int(FLAGS.grid_size*(x_loc + x)), int(FLAGS.grid_size*(y_loc + y))), 4, color, -1)
 
       cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4) # 2x(confidence + (x, y, w, h)) + class
@@ -144,10 +144,10 @@ def main(args):
           b = FLAGS.nclass + (1 + 4)*i
           e = b + (1 + 4)
           annot_data[y_loc, x_loc, b:e] = np.array(bbs[i], np.float32)
-      
+
       with open(os.path.join(FLAGS.train_annot_dir, filename + '.label'), 'wb') as f:
         f.write(annot_data.tobytes())
-     
+
 #      print "========================================================================="
 #      with open(os.path.join(FLAGS.train_annot_dir, filename + '.label'), 'rb') as f:
 #        annot_data = np.frombuffer(f.read(), dtype=np.float32)
