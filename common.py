@@ -1,4 +1,8 @@
 import numpy as np
+import os
+import random
+import xmltodict
+from PIL import Image
 
 idx2obj = [
   'blank',
@@ -30,7 +34,7 @@ def build_obj2idx(idx2obj):
     obj2idx[obj] = len(obj2idx)
   
   for k, v in obj2idx.items():
-    print k, v
+    print(k, v)
   return obj2idx
 
 def build_colormap_lookup(N):
@@ -60,7 +64,7 @@ def build_colormap_lookup(N):
   return colormap, palette
 
 def maybe_download(directory, filename, url):
-  print 'Try to dwnloaded', url
+  print('Try to dwnloaded', url)
   if not tf.gfile.Exists(directory):
     tf.gfile.MakeDirs(directory)
   filepath = os.path.join(directory, filename)
@@ -68,8 +72,102 @@ def maybe_download(directory, filename, url):
     filepath, _ = urllib.request.urlretrieve(url, filepath)
     with tf.gfile.GFile(filepath) as f:
       size = f.size()
-    print 'Successfully downloaded', filename, size, 'bytes.'
+    print('Successfully downloaded', filename, size, 'bytes.')
   return filepath
 
 def load_pretrained(filepath):
-  return np.load(filepath).item()
+  return np.load(filepath, encoding='bytes').item()
+
+def img_listup(imgs):
+  size = len(imgs)
+  (h, w) = imgs[0].shape[:2]
+  out = np.zeros((h, w*size, 3), np.uint8)
+
+  offset = 0
+  for i in range(size):
+    out[:, offset: offset + w] = imgs[i]
+    offset += w
+ 
+  return out
+
+class DataCenter(object):
+  def nextPair(self):
+    raise NotImplementedError
+
+  def shuffle(self):
+    raise NotImplementedError
+  
+  def getPair(self, idx):
+    raise NotImplementedError
+  
+  @property
+  def size(self):
+    raise NotImplementedError
+
+class VOC2012(DataCenter):
+  def __init__(self, train_val_ratio=0.1):
+
+    base_path = "../../data/VOCdevkit/VOC2012/"
+    info_path = base_path + "ImageSets/Main/"
+    self.img_path = base_path + "JPEGImages/"
+    self.annot_path = base_path + "Annotations/"
+
+    with open(os.path.join(info_path, "trainval.txt")) as f:
+      _filelist = f.readlines()
+      filelist = [ filename.rstrip() for filename in _filelist] 
+    
+    self._size = int(train_val_ratio*len(filelist))
+    self._val_size = len(filelist) - self._size
+
+    trainpairs = filelist[:self._size]
+    validpairs = filelist[self._size:]
+
+    self.trainpairs = trainpairs
+    self.validpairs = validpairs
+
+  def shuffle(self):
+    random.shuffle(self.trainpairs)
+
+  @property
+  def size(self):
+    return self._size
+  
+  @property
+  def val_size(self):
+    return self._val_size
+
+  def load_annot(self, path):
+
+    xml_file = os.path.join(path)
+    with open(xml_file) as f:
+      xml_data = f.read()
+      #print xml_data
+      o = xmltodict.parse(xml_data)
+      objs = o['annotation']['object']
+      size = o['annotation']['size']
+      w, h = (int(size['width']), int(size['height']))
+      
+      if isinstance(objs, list): # if a image have multiple objects
+        annots = objs
+      else: # only one object
+        annots = [objs]
+
+    return ((w, h), annots)
+
+  def _getPair(self, pairs, idx):
+    filename = pairs[idx]
+
+    jpegpath = os.path.join(self.img_path, filename + '.jpg')
+    annotpath = os.path.join(self.annot_path, filename + '.xml')
+    _img = Image.open(jpegpath)
+    label = self.load_annot(annotpath)
+
+    img = np.array(_img)
+    _img.close()
+    return (filename, img, label)
+
+  def getTrainPair(self, idx):
+    return self._getPair(self.trainpairs, idx)
+
+  def getValPair(self, idx):
+    return self._getPair(self.validpairs, idx)

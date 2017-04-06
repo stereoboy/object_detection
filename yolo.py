@@ -1,5 +1,6 @@
 import tensorflow as tf
 import numpy as np
+import multiprocessing as mp
 import glob
 import os
 import json
@@ -13,7 +14,7 @@ import vgg_16
 FLAGS = tf.flags.FLAGS
 tf.flags.DEFINE_string("device", "/cpu:*", "device")
 #tf.flags.DEFINE_string("device", "/gpu:*", "device")
-tf.flags.DEFINE_integer("max_itrs", "10000", "maximum iterations for training")
+tf.flags.DEFINE_integer("max_epoch", "200", "maximum iterations for training")
 #tf.flags.DEFINE_integer("batch_size", "64", "batch size for training")
 tf.flags.DEFINE_integer("batch_size", "16", "batch size for training")
 tf.flags.DEFINE_integer("B", "2", "number of Bound Box in grid cell")
@@ -27,8 +28,6 @@ tf.flags.DEFINE_float("margin", "20", "Margin to converge to for discriminator")
 tf.flags.DEFINE_string("noise_type", "uniform", "noise type for z vectors")
 tf.flags.DEFINE_integer("channel", "3", "batch size for training")
 tf.flags.DEFINE_integer("img_size", "448", "sample image size")
-tf.flags.DEFINE_integer("g_ch_size", "64", "channel size in last discriminator layer")
-tf.flags.DEFINE_integer("d_ch_size", "32", "channel size in last discriminator layer")
 tf.flags.DEFINE_integer("num_threads", "6", "max thread number")
 tf.flags.DEFINE_string("filelist", "filelist.json", "filelist.json")
 tf.flags.DEFINE_string("save_dir", "yolo_checkpoints", "dir for checkpoints")
@@ -36,9 +35,88 @@ tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base direct
 tf.flags.DEFINE_string("train_img_dir", "./train_img", "base directory for data")
 tf.flags.DEFINE_string("train_annot_dir", "./train_annot", "base directory for data")
 
+def augment_brightness_saturation(image):
+
+  # all functions include clamping for overflow values
+  image = tf.image.random_brightness(image, max_delta=0.3)
+  image = tf.image.random_saturation(image, lower=0.7, upper=1.3)	
+  return image
+
+def augment_scale_translate(images, annot, scale_range=0.2):
+
+  batch_size = images.get_shape()[0]
+  # Translation
+  scale = 1.0 + tf.random_uniform([1], minval=0.0, maxval=scale_range)
+  size = tf.constant([FLAGS.img_size, FLAGS.img_size])
+  print(scale)
+  new_size = scale*tf.cast(size, dtype=tf.float32)
+#	image = tf.image.resize(image, new_size)
+#	
+#	# Crop to 32x32
+#	x = int((new_size - IMAGE_SIZE)*np.random.uniform())
+#	y = int((new_size - IMAGE_SIZE)*np.random.uniform())
+#	image = image[y:y+IMAGE_SIZE, x:x+IMAGE_SIZE,:]
+
+  print("images:", images)
+  #start = tf.random_uniform([FLAGS.batch_size, 2], minval=0.0, maxval=scale_range)
+  start = tf.zeros([batch_size, 2])
+  #end = start + tf.constant(0.8)
+  #end = tf.random_uniform([FLAGS.batch_size, 2], minval=0.8, maxval=1.0)
+  end = tf.ones([batch_size, 2])
+  boxes = tf.concat([start, end], axis=1)
+  boxes = tf.cast(boxes, dtype=tf.float32)
+  print("boxes:", start, end, boxes)
+  #box_ind = tf.constant(np.arange(batch_size), dtype=tf.int32)
+  box_ind = tf.range(start=0, limit=batch_size, dtype=tf.int32)
+  print("box_ind:", box_ind)
+  print("AAAAAAAA:", box_ind.dtype.max)
+  images = tf.image.crop_and_resize(
+      images,
+      boxes=boxes,
+      box_ind=box_ind,
+      crop_size=size
+      )
+
+  print("images:", images)
+  return images
+
+def random_crop(value, size, seed=None, name=None):
+  """Randomly crops a tensor to a given size.
+  Slices a shape `size` portion out of `value` at a uniformly chosen offset.
+  Requires `value.shape >= size`.
+  If a dimension should not be cropped, pass the full size of that dimension.
+  For example, RGB images can be cropped with
+  `size = [crop_height, crop_width, 3]`.
+  Args:
+    value: Input tensor to crop.
+    size: 1-D tensor with size the rank of `value`.
+    seed: Python integer. Used to create a random seed. See
+      @{tf.set_random_seed}
+      for behavior.
+    name: A name for this operation (optional).
+  Returns:
+    A cropped tensor of the same rank as `value` and shape `size`.
+  """
+  # TODO(shlens): Implement edge case to guarantee output size dimensions.
+  # If size > value.shape, zero pad the result so that it always has shape
+  # exactly size.
+  with ops.name_scope(name, "random_crop", [value, size]) as name:
+    value = ops.convert_to_tensor(value, name="value")
+    size = ops.convert_to_tensor(size, dtype=dtypes.int32, name="size")
+    shape = array_ops.shape(value)
+    check = control_flow_ops.Assert(
+        math_ops.reduce_all(shape >= size),
+        ["Need value.shape >= size, got ", shape, size])
+    shape = control_flow_ops.with_dependencies([check], shape)
+    limit = shape - size + 1
+    offset = random_uniform(
+        array_ops.shape(shape),
+        dtype=size.dtype,
+        maxval=size.dtype.max,
+        seed=seed) % limit
+    return array_ops.slice(value, offset, size, name=name)
 
 def get_inputs(img_list, annot_list):
-
 
   # reference: http://stackoverflow.com/questions/34783030/saving-image-files-in-tensorflow
 
@@ -66,6 +144,7 @@ def get_inputs(img_list, annot_list):
                                  min_after_dequeue=FLAGS.batch_size*100,
                                  shapes=[[FLAGS.img_size, FLAGS.img_size, FLAGS.channel], [FLAGS.num_grid, FLAGS.num_grid, cell_info_dim]]
                                  )
+
 
 def init_YOLOBE():
   def init_with_normal():
@@ -166,7 +245,8 @@ def model_YOLO(x, WEs, BEs, WFCs, BFCs, drop_prob = 0.5, reuse=False):
   relued = conv_relu(relued, WEs, BEs, '24', reuse)
 
   # fully-connected step
-  fc = tf.reshape(relued, shape=[FLAGS.batch_size, -1])
+  batch_size = relued.get_shape()[0]
+  fc = tf.reshape(relued, shape=[batch_size, -1]) # [batch_size, 7*7*1024]
 
   fc = tf.nn.bias_add(tf.matmul(fc, WFCs['1']), BFCs['1'])
 
@@ -184,10 +264,10 @@ def model_YOLO(x, WEs, BEs, WFCs, BFCs, drop_prob = 0.5, reuse=False):
 def get_opt(loss, scope):
   var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope)
 
-  print "============================"
-  print scope
+  print("============================")
+  print(scope)
   for item in var_list:
-    print item.name
+    print(item.name)
   # Optimizer: set up a variable that's incremented once per batch and
   # controls the learning rate decay.
 #  batch = tf.Variable(0, dtype=tf.int32)
@@ -240,8 +320,22 @@ def calculate_loss(y, out):
   loss = coord_term + class_term
   return loss
 
+def aug_scale_translate((filename, img, annot)):
+  print(filename)
+
+  img = cv2.resize(img, (FLAGS.img_size, FLAGS.img_size))
+  return img
+
 def main(args):
-    
+
+  cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4) # 2x(confidence + (x, y, w, h)) + class
+  datacenter = common.VOC2012()
+
+  pool = mp.Pool(processes=6)
+
+  _x = tf.placeholder(tf.float32, [None, FLAGS.img_size, FLAGS.img_size, FLAGS.channel])
+
+  _y = tf.placeholder(tf.float32, [None, FLAGS.num_grid, FLAGS.num_grid, cell_info_dim])
   if not os.path.exists(FLAGS.save_dir):
     os.makedirs(FLAGS.save_dir)
 
@@ -255,7 +349,11 @@ def main(args):
   data, label = get_inputs(img_list, annot_list)
 
   mean = tf.constant(np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32))
-  x = tf.cast(data, dtype=tf.float32) - mean
+
+ 
+  #aug = augment_scale_translate(data, None)
+  aug = tf.map_fn(lambda x:augment_brightness_saturation(x), _x)
+  x = tf.cast(aug, dtype=tf.float32) - mean
 
   with tf.device(FLAGS.device):
 
@@ -263,24 +361,25 @@ def main(args):
     print("0. input setup is done.")
 
 
-    with tf.variable_scope("vgg_16") as scope:
-      Ws, Bs = vgg_16.init_VGG16(pretrained)
-    
-    with tf.variable_scope("YOLO") as scope:
-      WEs, BEs, WFCs, BFCs, = init_YOLOBE()
-    
-    print("1. variable setup is done.")
-
-    out = vgg_16.model_VGG16(x, Ws, Bs)
-    out = model_YOLO(out, WEs, BEs, WFCs, BFCs)
-    print("2. model setup is done.")
-
-    out = tf.transpose(out, perm=[0, 2, 3, 1])
-    loss = calculate_loss(label, out)
-    print("3. loss setup is done.")
-
-    opt = get_opt(loss, "YOLO")
-    print("4. optimizer setup is done.")
+#    with tf.variable_scope("vgg_16") as scope:
+#      Ws, Bs = vgg_16.init_VGG16(pretrained)
+#    
+#    with tf.variable_scope("YOLO") as scope:
+#      WEs, BEs, WFCs, BFCs, = init_YOLOBE()
+#    
+#    print("1. variable setup is done.")
+#
+#    out = vgg_16.model_VGG16(x, Ws, Bs)
+#    out = model_YOLO(out, WEs, BEs, WFCs, BFCs)
+#    print("2. model setup is done.")
+#
+#    out = tf.transpose(out, perm=[0, 2, 3, 1])
+#    loss = calculate_loss(label, out)
+#    print("3. loss setup is done.")
+#
+#    opt = get_opt(loss, "YOLO")
+#    print("4. optimizer setup is done.")
+    W = tf.get_variable('test', shape=[3,3,3,3])
 
     init_op = tf.group(tf.global_variables_initializer(),
                        tf.local_variables_initializer())
@@ -296,9 +395,6 @@ def main(args):
   with tf.Session(config=config) as sess:
     sess.run(init_op)
 
-    coord = tf.train.Coordinator()
-    threads = tf.train.start_queue_runners(sess, coord)
-
     saver = tf.train.Saver()
     checkpoint = tf.train.latest_checkpoint(FLAGS.save_dir)
     print("checkpoint: %s" % checkpoint)
@@ -311,29 +407,37 @@ def main(args):
       filename = "checkpoint" + dt.strftime("%Y-%m-%d_%H-%M-%S")
       checkpoint = os.path.join(FLAGS.save_dir, filename)
 
-    try:
-      for itr in range(FLAGS.max_itrs):
+    for epoch in range(FLAGS.max_epoch):
+      print("#####################################################################")
+      datacenter.shuffle()
+      for itr in xrange(0, datacenter.size, FLAGS.batch_size):
+        print("===================================================================")
+        print("[{}] {}/{}".format(epoch, itr, datacenter.size))
+        batch_size = min(FLAGS.batch_size, datacenter.size - itr)
+        datalist = [datacenter.getTrainPair(i) for i in range(itr, itr + batch_size) ]
+        filelist = [ i[0] for i in datalist]
+        imglist = [ i[1] for i in datalist]
+        annotlist = [ i[2] for i in datalist]
+        imgs = pool.map(aug_scale_translate, datalist)
 
-        print('------------------------------------------------------')
-
-        data_val, label_val = sess.run([data, label])
+        annot =  np.zeros((batch_size, FLAGS.num_grid, FLAGS.num_grid, cell_info_dim), np.float32)       
+        feed_dict = {_x: imgs, _y: annot}
+        _x_val, aug_val, label_val = sess.run([_x, aug, label])
 
         current = datetime.now()
         print('\telapsed:' + str(current - start))
 
-        if itr > 1 and itr % 10 == 0:
-          cv2.imshow('data', cv2.cvtColor(data_val[0],cv2.COLOR_RGB2BGR))
-        cv2.waitKey(5)
+        if itr > 1 and itr % 1 == 0:
+          orig_img = cv2.cvtColor(_x_val[0],cv2.COLOR_RGB2BGR)
+          aug_img = cv2.cvtColor(aug_val[0], cv2.COLOR_RGB2BGR)
+          cv2.imshow('input', common.img_listup([orig_img, aug_img]))
+
+        cv2.waitKey(0)
         if itr > 1 and itr % 300 == 0:
           #energy_d_val, loss_d_val, loss_g_val = sess.run([energy_d, loss_d, loss_g])
           print("#######################################################")
           #print "\tE=", energy_d_val, "Ld(x, z)=", loss_d, "Lg(z)=", loss_g
           saver.save(sess, checkpoint)
-    except tf.errors.OutOfRangeError:
-      print("the last epoch ends.")
-
-    coord.request_stop()
-    coord.join(threads)
 
     cv2.destroyAllWindows()
 

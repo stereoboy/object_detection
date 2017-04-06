@@ -11,12 +11,12 @@ def conv_relu(tensor, W, B):
 
 def init_VGG16(pretrained, channel=3):
   def load_weight(name):
-    print(pretrained[name]['weights'].shape)
-    return tf.constant_initializer(value=pretrained[name]['weights'])
+    print(pretrained[name][b'weights'].shape)
+    return tf.constant_initializer(value=pretrained[name][b'weights'])
 
   def load_bias(name):
-    print(pretrained[name]['biases'].shape)
-    return tf.constant_initializer(value=pretrained[name]['biases'])
+    print(pretrained[name][b'biases'].shape)
+    return tf.constant_initializer(value=pretrained[name][b'biases'])
 
   # initialize with Pretrained model
   Ws = {

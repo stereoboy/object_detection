@@ -27,7 +27,7 @@ tf.flags.DEFINE_string("train_annot_dir", "./train_annot", "base directory for d
 
 
 def cal_rel_coord((x, y), (grid_x_size, grid_y_size)):
-  
+
   x_loc = x//grid_x_size
   x = float(x - x_loc* grid_x_size)/grid_x_size - 0.5
   y_loc = y//grid_y_size
@@ -50,7 +50,7 @@ def main(args):
   annot_path = FLAGS.data_dir + "Annotations/"
   img_path = FLAGS.data_dir + "JPEGImages/"
 
-  
+
   with open(os.path.join(info_path, 'trainval.txt')) as f:
     _filelist = f.readlines()
     filelist = [ filename.rstrip() for filename in _filelist] 
@@ -60,7 +60,7 @@ def main(args):
     data = filelist
     json.dump(data, out, indent=2)
 
-  annot_list = [] 
+  annot_list = []
   for filename in filelist:
     print filename
     xml_file = os.path.join(annot_path, filename + '.xml')
