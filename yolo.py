@@ -1,6 +1,6 @@
 import tensorflow as tf
 import numpy as np
-import multiprocessing as mp
+#import multiprocessing as mp
 import glob
 import os
 import json
@@ -10,13 +10,15 @@ import sys
 import getopt
 import common
 import vgg_16
+import random
+from PIL import Image
 
 FLAGS = tf.flags.FLAGS
 tf.flags.DEFINE_string("device", "/cpu:*", "device")
 #tf.flags.DEFINE_string("device", "/gpu:*", "device")
 tf.flags.DEFINE_integer("max_epoch", "200", "maximum iterations for training")
 #tf.flags.DEFINE_integer("batch_size", "64", "batch size for training")
-tf.flags.DEFINE_integer("batch_size", "16", "batch size for training")
+tf.flags.DEFINE_integer("batch_size", "2", "batch size for training")
 tf.flags.DEFINE_integer("B", "2", "number of Bound Box in grid cell")
 tf.flags.DEFINE_integer("num_grid", "7", "number of grids vertically, horizontally")
 tf.flags.DEFINE_integer("nclass", "20", "class num")
@@ -27,6 +29,7 @@ tf.flags.DEFINE_float("pt_w", "0.1", "weight of pull-away term")
 tf.flags.DEFINE_float("margin", "20", "Margin to converge to for discriminator")
 tf.flags.DEFINE_string("noise_type", "uniform", "noise type for z vectors")
 tf.flags.DEFINE_integer("channel", "3", "batch size for training")
+tf.flags.DEFINE_integer("img_orig_size", "537", "sample image size")
 tf.flags.DEFINE_integer("img_size", "448", "sample image size")
 tf.flags.DEFINE_integer("num_threads", "6", "max thread number")
 tf.flags.DEFINE_string("filelist", "filelist.json", "filelist.json")
@@ -35,38 +38,110 @@ tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base direct
 tf.flags.DEFINE_string("train_img_dir", "./train_img", "base directory for data")
 tf.flags.DEFINE_string("train_annot_dir", "./train_annot", "base directory for data")
 
+def load_imgs(filelist):
+  def load_img(path):
+    _img = Image.open(path)
+    img = np.array(_img)
+    _img.close()
+    return img
+
+  _imgs = [os.path.join(FLAGS.train_img_dir, filename + ".png") for filename in filelist]
+
+  imgs = map(load_img,_imgs) 
+  return imgs
+
+def load_annots(filelist):
+  def load_annot(path):
+    print path
+    annot = np.load(path, encoding='bytes')
+    print("original dims: {}x{}".format(annot[0,0], annot[0,1]))
+    return  annot
+    
+  _annots = [os.path.join(FLAGS.train_annot_dir, filename + ".npy") for filename in filelist]
+
+  annots = map(load_annot, _annots) 
+
+  return annots
+
+def build_feed_annots(_feed_annots):
+  print("build_feed_annots()")
+  print(_feed_annots)
+  batch_size = len(_feed_annots)
+
+  cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4)
+  feed_annots = np.zeros((batch_size, FLAGS.num_grid, FLAGS.num_grid, cell_info_dim), np.float32)
+ 
+  # scale and translation
+  # input image is resized 537x537
+  # we will choose random crop size and offset, and resize into 428x428
+  # This is equivalent to resize ~20% and crop with the widnow of 428x428
+  scales = np.random.uniform(0.83, 1.0, [batch_size, 1])
+  offsets = (1 - scales)*np.random.uniform(0.0, 1.0, [batch_size, 2])
+  ends = offsets + scales
+  feed_scaletrans = np.concatenate([offsets, ends], axis=1)
+
+  print (feed_scaletrans)
+
+  # build augmented annotations
+  for i, _annot in enumerate(_feed_annots):
+    # each image
+    annot = _annot.copy()
+    _w, _h = _annot[0, :2]
+    scale = scales[i, 0] # w, h scale is same
+    w, h = (_w*scale, _h*scale)
+    offset = offsets[i]
+    print ('A')
+    print(offset)
+    print _annot
+    annot[1:, 1:3] = _annot[1:, 1:3] - offset[0]
+    annot[1:, 3:5] = _annot[1:, 3:5] - offset[1]
+    print ('B')
+    print annot
+    w_grid, h_grid = (w/FLAGS.num_grid, h/FLAGS.num_grid)
+    
+    _annot_data = {}
+    for box in annot[1:]:
+      idx, x1, x2, y1, y2 = box
+      idx = int(idx)
+      (x_loc, y_loc), (cx, cy, bw, bh) = common.cal_rel_coord((w, h), (x1, x2, y1, y2), (w_grid, h_grid))
+
+      # if object is still on cropped region
+      if x_loc >= 0 and x_loc < 7 and y_loc >= 0 and y_loc < 7:
+        if not (x_loc, y_loc) in _annot_data.keys():
+          _annot_data[(x_loc, y_loc)] = (idx, [])
+          _annot_data[(x_loc, y_loc)][1].append((1.0, cx, cy, bw, bh))
+        elif _annot_data[(x_loc, y_loc)][0] == idx:
+          _annot_data[(x_loc, y_loc)][1].append((1.0, cx, cy, bw, bh))
+      
+    for (x_loc, y_loc), (idx, bbs)  in _annot_data.items():
+      print (x_loc, y_loc), (idx, bbs)
+      feed_annots[i, y_loc, x_loc, idx-1] = 1
+      for bbi in range(min(2, len(bbs))):
+        b = FLAGS.nclass + (1 + 4)*bbi
+        e = b + (1 + 4)
+        feed_annots[i, y_loc, x_loc, b:e] = np.array(bbs[bbi], np.float32)
+
+  # annot
+  return feed_scaletrans, feed_annots
+
 def augment_brightness_saturation(image):
 
   # all functions include clamping for overflow values
   image = tf.image.random_brightness(image, max_delta=0.3)
-  image = tf.image.random_saturation(image, lower=0.7, upper=1.3)	
+  image = tf.image.random_saturation(image, lower=0.7, upper=1.3)
   return image
 
-def augment_scale_translate(images, annot, scale_range=0.2):
+def augment_scale_translate(images, boxes, scale_range=0.2):
 
-  batch_size = images.get_shape()[0]
+  #batch_size = images.get_shape()[0]
+  batch_size = FLAGS.batch_size
   # Translation
   scale = 1.0 + tf.random_uniform([1], minval=0.0, maxval=scale_range)
   size = tf.constant([FLAGS.img_size, FLAGS.img_size])
   print(scale)
   new_size = scale*tf.cast(size, dtype=tf.float32)
-#	image = tf.image.resize(image, new_size)
-#	
-#	# Crop to 32x32
-#	x = int((new_size - IMAGE_SIZE)*np.random.uniform())
-#	y = int((new_size - IMAGE_SIZE)*np.random.uniform())
-#	image = image[y:y+IMAGE_SIZE, x:x+IMAGE_SIZE,:]
 
   print("images:", images)
-  #start = tf.random_uniform([FLAGS.batch_size, 2], minval=0.0, maxval=scale_range)
-  start = tf.zeros([batch_size, 2])
-  #end = start + tf.constant(0.8)
-  #end = tf.random_uniform([FLAGS.batch_size, 2], minval=0.8, maxval=1.0)
-  end = tf.ones([batch_size, 2])
-  boxes = tf.concat([start, end], axis=1)
-  boxes = tf.cast(boxes, dtype=tf.float32)
-  print("boxes:", start, end, boxes)
-  #box_ind = tf.constant(np.arange(batch_size), dtype=tf.int32)
   box_ind = tf.range(start=0, limit=batch_size, dtype=tf.int32)
   print("box_ind:", box_ind)
   print("AAAAAAAA:", box_ind.dtype.max)
@@ -124,60 +199,68 @@ def get_inputs(img_list, annot_list):
   print(annot_list[:10])
   print(FLAGS.batch_size)
 
-  img_queue = tf.train.string_input_producer(img_list, shuffle=False)
+  img_queue = tf.train.string_input_producer(img_list, num_epochs=1, shuffle=False, seed=0)
   reader = tf.WholeFileReader()
-  key, value = reader.read(img_queue)
+  key0, value = reader.read(img_queue)
   decoded = tf.image.decode_png(value)
 
-  annot_queue = tf.train.string_input_producer(annot_list, shuffle=False)
+  annot_queue = tf.train.string_input_producer(annot_list, num_epochs=1, shuffle=False, seed=0)
   cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4)
   label_bytes = 4*FLAGS.num_grid*FLAGS.num_grid*cell_info_dim
   reader = tf.FixedLengthRecordReader(record_bytes=label_bytes)
-  key, value = reader.read(annot_queue)
+  key1, value = reader.read(annot_queue)
   annot = tf.decode_raw(value, tf.float32)
   annot = tf.reshape(annot, [FLAGS.num_grid, FLAGS.num_grid, -1])
 
-  return tf.train.shuffle_batch([decoded, annot],
-                                 batch_size=FLAGS.batch_size,
-                                 num_threads=FLAGS.num_threads,
-                                 capacity=FLAGS.batch_size*200,
-                                 min_after_dequeue=FLAGS.batch_size*100,
-                                 shapes=[[FLAGS.img_size, FLAGS.img_size, FLAGS.channel], [FLAGS.num_grid, FLAGS.num_grid, cell_info_dim]]
-                                 )
+#  return tf.train.shuffle_batch([key, decoded, annot],
+#                                 batch_size=FLAGS.batch_size,
+#                                 num_threads=FLAGS.num_threads,
+#                                 capacity=10,
+#                                 min_after_dequeue=2,
+#                                 shapes=[[], [FLAGS.img_size, FLAGS.img_size, FLAGS.channel], [FLAGS.num_grid, FLAGS.num_grid, cell_info_dim]]
+#                                 )
+
+  return tf.train.batch([key0, key1, decoded, annot],
+                         batch_size=FLAGS.batch_size,
+                         #num_threads=FLAGS.num_threads,
+                         num_threads=2,
+                         capacity=2,
+                         shapes=[[], [], [FLAGS.img_size, FLAGS.img_size, FLAGS.channel], [FLAGS.num_grid, FLAGS.num_grid, cell_info_dim]]
+                         )
 
 
 def init_YOLOBE():
   def init_with_normal():
     return tf.truncated_normal_initializer(mean=0.0, stddev=0.1)
-  
+
   WEs = {
-      # step 5 
+      # step 5
       "17":tf.get_variable('e_conv_17', shape = [1, 1, 512, 512], initializer=init_with_normal()),
       "18":tf.get_variable('e_conv_18', shape = [3, 3, 512, 1024], initializer=init_with_normal()),
-      
+
       "19":tf.get_variable('e_conv_19', shape = [1, 1, 1024, 512], initializer=init_with_normal()),
       "20":tf.get_variable('e_conv_20', shape = [3, 3, 512, 1024], initializer=init_with_normal()),
-      
+
       "21":tf.get_variable('e_conv_21', shape = [3, 3, 1024, 1024], initializer=init_with_normal()),
       "22":tf.get_variable('e_conv_22', shape = [3, 3, 1024, 1024], initializer=init_with_normal()),
-      
-      # step 6 
+
+      # step 6
       "23":tf.get_variable('e_conv_23', shape = [3, 3, 1024, 1024], initializer=init_with_normal()),
       "24":tf.get_variable('e_conv_24', shape = [3, 3, 1024, 1024], initializer=init_with_normal()),
       }
 
   BEs = {
-      # step 5 
+      # step 5
       "17":tf.get_variable('e_bias_17', shape = [512], initializer=init_with_normal()),
       "18":tf.get_variable('e_bias_18', shape = [1024], initializer=init_with_normal()),
-      
+
       "19":tf.get_variable('e_bias_19', shape = [512], initializer=init_with_normal()),
       "20":tf.get_variable('e_bias_20', shape = [1024], initializer=init_with_normal()),
-      
+
       "21":tf.get_variable('e_bias_21', shape = [1024], initializer=init_with_normal()),
       "22":tf.get_variable('e_bias_22', shape = [1024], initializer=init_with_normal()),
-      
-      # step 6 
+
+      # step 6
       "23":tf.get_variable('e_bias_23', shape = [1024], initializer=init_with_normal()),
       "24":tf.get_variable('e_bias_24', shape = [1024], initializer=init_with_normal()),
       }
@@ -224,24 +307,24 @@ def model_YOLO(x, WEs, BEs, WFCs, BFCs, drop_prob = 0.5, reuse=False):
   mp_ksize= [1, 1, 2, 2]
   mp_strides=[1, 1, 2, 2]
 
-  # step 5 
+  # step 5
   relued = conv_relu(x, WEs, BEs, '17', reuse)
-  
+
   relued = conv_relu(relued, WEs, BEs, '18', reuse)
-  
+
   relued = conv_relu(relued, WEs, BEs, '19', reuse)
-  
+
   relued = conv_relu(relued, WEs, BEs, '20', reuse)
-  
+
   relued = conv_relu(relued, WEs, BEs, '21', reuse)
 
   relued = conv_relu(relued, WEs, BEs, '22', reuse)
 
   pooled = tf.nn.max_pool(relued, ksize=mp_ksize, strides=mp_strides, padding='SAME', data_format='NCHW')
- 
+
   # step 6
   relued = conv_relu(pooled, WEs, BEs, '23', reuse)
-  
+
   relued = conv_relu(relued, WEs, BEs, '24', reuse)
 
   # fully-connected step
@@ -252,7 +335,7 @@ def model_YOLO(x, WEs, BEs, WFCs, BFCs, drop_prob = 0.5, reuse=False):
 
   relued = leaky_relu(fc)
   dropouted = tf.nn.dropout(relued, drop_prob)
-  
+
   fc = tf.nn.bias_add(tf.matmul(dropouted, WFCs['2']), BFCs['2'])
 
   final = tf.reshape(fc, shape=[-1, (FLAGS.nclass + 5*FLAGS.B), 7, 7])
@@ -301,7 +384,7 @@ def calculate_loss(y, out):
   # calculate boundbox infos
   lambda_coord = 5
   lambda_noobj = 0.5
- 
+
   coord_term  = 0
   for i in range(FLAGS.B):
     yC, yXY, yWH = tf.split(value=yBBs[i], num_or_size_splits=[1, 2, 2], axis=3)
@@ -316,7 +399,7 @@ def calculate_loss(y, out):
   obj, _ = tf.split(value=yBBs, num_or_size_splits=[1, 4], axis=3)
   noobj = 1 - obj
   class_term = tf.reduce_sum(obj * tf.square(yC - C))
-  
+
   loss = coord_term + class_term
   return loss
 
@@ -328,14 +411,15 @@ def aug_scale_translate((filename, img, annot)):
 
 def main(args):
 
+  colormap, palette = common.build_colormap_lookup(21)
   cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4) # 2x(confidence + (x, y, w, h)) + class
   datacenter = common.VOC2012()
 
-  pool = mp.Pool(processes=6)
+  #pool = mp.Pool(processes=6)
 
-  _x = tf.placeholder(tf.float32, [None, FLAGS.img_size, FLAGS.img_size, FLAGS.channel])
-
+  _x = tf.placeholder(tf.float32, [None, FLAGS.img_orig_size, FLAGS.img_orig_size, FLAGS.channel])
   _y = tf.placeholder(tf.float32, [None, FLAGS.num_grid, FLAGS.num_grid, cell_info_dim])
+  _st = tf.placeholder(tf.float32, [None, 4])
   if not os.path.exists(FLAGS.save_dir):
     os.makedirs(FLAGS.save_dir)
 
@@ -346,13 +430,15 @@ def main(args):
 
   img_list = [os.path.join(FLAGS.train_img_dir, filename + ".png") for filename in filelist]
   annot_list = [os.path.join(FLAGS.train_annot_dir, filename + ".label") for filename in filelist]
-  data, label = get_inputs(img_list, annot_list)
+
+  #data = zip(filelist, img_list, annot_list)
+  #key0, key1, data, label = get_inputs(img_list[:20], annot_list[:20])
 
   mean = tf.constant(np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32))
 
- 
-  #aug = augment_scale_translate(data, None)
-  aug = tf.map_fn(lambda x:augment_brightness_saturation(x), _x)
+
+  aug = augment_scale_translate(_x, _st)
+  #aug = tf.map_fn(lambda x:augment_brightness_saturation(x), _x)
   x = tf.cast(aug, dtype=tf.float32) - mean
 
   with tf.device(FLAGS.device):
@@ -363,10 +449,10 @@ def main(args):
 
 #    with tf.variable_scope("vgg_16") as scope:
 #      Ws, Bs = vgg_16.init_VGG16(pretrained)
-#    
+#
 #    with tf.variable_scope("YOLO") as scope:
 #      WEs, BEs, WFCs, BFCs, = init_YOLOBE()
-#    
+#
 #    print("1. variable setup is done.")
 #
 #    out = vgg_16.model_VGG16(x, Ws, Bs)
@@ -390,10 +476,13 @@ def main(args):
   print("Start: ",  start.strftime("%Y-%m-%d_%H-%M-%S"))
 
   config=tf.ConfigProto()
-  config.log_device_placement=True
+  #config.log_device_placement=True
   config.intra_op_parallelism_threads=FLAGS.num_threads
   with tf.Session(config=config) as sess:
     sess.run(init_op)
+
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess, coord)
 
     saver = tf.train.Saver()
     checkpoint = tf.train.latest_checkpoint(FLAGS.save_dir)
@@ -409,35 +498,54 @@ def main(args):
 
     for epoch in range(FLAGS.max_epoch):
       print("#####################################################################")
-      datacenter.shuffle()
-      for itr in xrange(0, datacenter.size, FLAGS.batch_size):
+      print("1:")
+      #random.shuffle(filelist)
+      for itr in xrange(0, len(filelist)//FLAGS.batch_size):
         print("===================================================================")
         print("[{}] {}/{}".format(epoch, itr, datacenter.size))
-        batch_size = min(FLAGS.batch_size, datacenter.size - itr)
-        datalist = [datacenter.getTrainPair(i) for i in range(itr, itr + batch_size) ]
-        filelist = [ i[0] for i in datalist]
-        imglist = [ i[1] for i in datalist]
-        annotlist = [ i[2] for i in datalist]
-        imgs = pool.map(aug_scale_translate, datalist)
 
-        annot =  np.zeros((batch_size, FLAGS.num_grid, FLAGS.num_grid, cell_info_dim), np.float32)       
-        feed_dict = {_x: imgs, _y: annot}
-        _x_val, aug_val, label_val = sess.run([_x, aug, label])
+        # build minibatch
+        #batch_size = min(FLAGS.batch_size, datacenter.size - itr)
+        _batch = filelist[itr:itr + FLAGS.batch_size]
+
+        feed_imgs = load_imgs(_batch)
+        _feed_annots = load_annots(_batch)
+
+        feed_scaletrans, feed_annots = build_feed_annots(_feed_annots)
+
+        feed_dict = {_x: feed_imgs, _y: feed_annots, _st: feed_scaletrans}
+
+        #feed_dict = {_x: imgs, _y: annot}
+        data_val, aug_val, label_val = sess.run([_x, aug, _y], feed_dict=feed_dict)
 
         current = datetime.now()
         print('\telapsed:' + str(current - start))
 
-        if itr > 1 and itr % 1 == 0:
-          orig_img = cv2.cvtColor(_x_val[0],cv2.COLOR_RGB2BGR)
+        if itr % 1 == 0:
+
+#          idx = obj2idx[annot['name']]
+#          _color = palette[idx]
+#          color = (int(_color[2]), int(_color[1]), int(_color[0]))
+          orig_img = cv2.cvtColor(data_val[0],cv2.COLOR_RGB2BGR)
+          # crop region
+          cr = feed_scaletrans[0]*FLAGS.img_orig_size
+          cr = cr.astype(np.int)
+
+          orig_img = common.visualization(orig_img, _feed_annots[0], FLAGS.num_grid, palette )
+          orig_img = cv2.rectangle(orig_img, (cr[1], cr[0]), (cr[3], cr[2]), (255,255,255), 2)
           aug_img = cv2.cvtColor(aug_val[0], cv2.COLOR_RGB2BGR)
           cv2.imshow('input', common.img_listup([orig_img, aug_img]))
 
-        cv2.waitKey(0)
+        key = cv2.waitKey(0)
+        if key == 27:
+          sys.exit()
         if itr > 1 and itr % 300 == 0:
           #energy_d_val, loss_d_val, loss_g_val = sess.run([energy_d, loss_d, loss_g])
           print("#######################################################")
           #print "\tE=", energy_d_val, "Ld(x, z)=", loss_d, "Lg(z)=", loss_g
           saver.save(sess, checkpoint)
+    coord.request_stop()
+    coord.join(threads)
 
     cv2.destroyAllWindows()
 

@@ -2,6 +2,7 @@ import numpy as np
 import os
 import random
 import xmltodict
+import cv2
 from PIL import Image
 
 idx2obj = [
@@ -85,7 +86,8 @@ def img_listup(imgs):
 
   offset = 0
   for i in range(size):
-    out[:, offset: offset + w] = imgs[i]
+    h, w = imgs[i].shape[:2]
+    out[:h, offset: offset + w] = imgs[i]
     offset += w
  
   return out
@@ -171,3 +173,56 @@ class VOC2012(DataCenter):
 
   def getValPair(self, idx):
     return self._getPair(self.validpairs, idx)
+
+def cal_rel_coord((w, h), (x1, x2, y1, y2), (grid_x_size, grid_y_size)):
+        
+  cx, cy = ((x1 + x2)/2.0, (y1 + y2)/2.0)
+  bw, bh = ((x2 - x1)/w, (y2 - y1)/h)
+
+  x_loc = cx//grid_x_size
+  cx = (cx - x_loc* grid_x_size)/grid_x_size - 0.5
+  y_loc = cy//grid_y_size
+  cy = (cy - y_loc* grid_y_size)/grid_y_size - 0.5
+
+  return (int(x_loc),int( y_loc)), (cx, cy, bw, bh)
+
+
+def visualization(img, _annot, num_grid, palette):
+  print("visualization()")
+  h, w = img.shape[:2]
+  print(h, w)
+  print(_annot)
+
+  grid_size = float(h)/num_grid
+
+  w_grid, h_grid = (w/num_grid, h/num_grid)
+  _w, _h = _annot[0, :2]
+  scale_w, scale_h = float(w)/_w, float(h)/_h 
+  for box in _annot[1:]:
+    idx, x1, x2, y1, y2 = box
+    idx = int(idx)
+    _color = palette[idx]
+    color = (int(_color[2]), int(_color[1]), int(_color[0]))
+    print("color:{}".format(color))
+    
+    name = idx2obj[idx]
+
+    cx, cy = (scale_w*(x1 + x2)/2.0, scale_h*(y1 + y2)/2.0)
+    x_loc = cx//w_grid
+    y_loc = cy//h_grid
+
+    grid_b = (int(grid_size*x_loc), int(grid_size*y_loc))
+    grid_e = (int(grid_size*(x_loc+1)), int(grid_size*(y_loc+1)))
+
+    b = (int(scale_w*x1), int(scale_h*y1))
+    e = (int(scale_w*x2), int(scale_h*y2))
+    #img = cv2.rectangle(img, grid_b, grid_e, color, -1)
+    img = cv2.rectangle(img, b, e, color, 5)
+    img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
+    img = cv2.circle(img, (int(cx), int(cy)), 4, color, -1)
+
+  return img
+
+def visualization2(img, annots):
+
+  return img
