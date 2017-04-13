@@ -33,7 +33,7 @@ def build_obj2idx(idx2obj):
   obj2idx = dict()
   for obj in idx2obj:
     obj2idx[obj] = len(obj2idx)
-  
+
   for k, v in obj2idx.items():
     print(k, v)
   return obj2idx
@@ -44,7 +44,7 @@ def build_colormap_lookup(N):
   palette = np.zeros((N, 3), np.uint8)
 
   for i in range(0, N):
-    ID = i 
+    ID = i
     r = 0
     g = 0
     b = 0
@@ -89,7 +89,7 @@ def img_listup(imgs):
     h, w = imgs[i].shape[:2]
     out[:h, offset: offset + w] = imgs[i]
     offset += w
- 
+
   return out
 
 class DataCenter(object):
@@ -98,10 +98,10 @@ class DataCenter(object):
 
   def shuffle(self):
     raise NotImplementedError
-  
+
   def getPair(self, idx):
     raise NotImplementedError
-  
+
   @property
   def size(self):
     raise NotImplementedError
@@ -116,8 +116,8 @@ class VOC2012(DataCenter):
 
     with open(os.path.join(info_path, "trainval.txt")) as f:
       _filelist = f.readlines()
-      filelist = [ filename.rstrip() for filename in _filelist] 
-    
+      filelist = [ filename.rstrip() for filename in _filelist]
+
     self._size = int(train_val_ratio*len(filelist))
     self._val_size = len(filelist) - self._size
 
@@ -133,7 +133,7 @@ class VOC2012(DataCenter):
   @property
   def size(self):
     return self._size
-  
+
   @property
   def val_size(self):
     return self._val_size
@@ -148,7 +148,7 @@ class VOC2012(DataCenter):
       objs = o['annotation']['object']
       size = o['annotation']['size']
       w, h = (int(size['width']), int(size['height']))
-      
+
       if isinstance(objs, list): # if a image have multiple objects
         annots = objs
       else: # only one object
@@ -174,17 +174,18 @@ class VOC2012(DataCenter):
   def getValPair(self, idx):
     return self._getPair(self.validpairs, idx)
 
-def cal_rel_coord((w, h), (x1, x2, y1, y2), (grid_x_size, grid_y_size)):
-        
+def cal_rel_coord((w, h), (x1, x2, y1, y2), (w_grid, h_grid)):
+  print('cal_rel_coord')
+  print(w,h, x1, x2, y1, y2, w_grid, h_grid)
   cx, cy = ((x1 + x2)/2.0, (y1 + y2)/2.0)
-  bw, bh = ((x2 - x1)/w, (y2 - y1)/h)
+  nw, nh = ((x2 - x1)/w, (y2 - y1)/h)
 
-  x_loc = cx//grid_x_size
-  cx = (cx - x_loc* grid_x_size)/grid_x_size - 0.5
-  y_loc = cy//grid_y_size
-  cy = (cy - y_loc* grid_y_size)/grid_y_size - 0.5
+  x_loc = cx//w_grid
+  cx = (cx - x_loc*w_grid)/w_grid - 0.5
+  y_loc = cy//h_grid
+  cy = (cy - y_loc*h_grid)/h_grid - 0.5
 
-  return (int(x_loc),int( y_loc)), (cx, cy, bw, bh)
+  return (int(x_loc),int( y_loc)), (cx, cy, nw, nh)
 
 
 def visualization(img, _annot, num_grid, palette):
@@ -197,14 +198,14 @@ def visualization(img, _annot, num_grid, palette):
 
   w_grid, h_grid = (w/num_grid, h/num_grid)
   _w, _h = _annot[0, :2]
-  scale_w, scale_h = float(w)/_w, float(h)/_h 
+  scale_w, scale_h = float(w)/_w, float(h)/_h
   for box in _annot[1:]:
     idx, x1, x2, y1, y2 = box
     idx = int(idx)
     _color = palette[idx]
     color = (int(_color[2]), int(_color[1]), int(_color[0]))
     print("color:{}".format(color))
-    
+
     name = idx2obj[idx]
 
     cx, cy = (scale_w*(x1 + x2)/2.0, scale_h*(y1 + y2)/2.0)
@@ -223,6 +224,3 @@ def visualization(img, _annot, num_grid, palette):
 
   return img
 
-def visualization2(img, annots):
-
-  return img

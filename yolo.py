@@ -47,8 +47,63 @@ def load_imgs(filelist):
 
   _imgs = [os.path.join(FLAGS.train_img_dir, filename + ".png") for filename in filelist]
 
-  imgs = map(load_img,_imgs) 
+  imgs = map(load_img,_imgs)
   return imgs
+
+def visualization2(img, annot, palette):
+  print("visualization2()")
+  h, w = img.shape[:2]
+
+  num_grid = annot.shape[0]
+  grid_size = FLAGS.img_size/num_grid
+  print(h, w)
+  print(annot.shape)
+  print("grid_size:{}".format(grid_size))
+
+  vis_grid = np.zeros_like(img)
+
+  for row in range(num_grid):
+    for col in range(num_grid):
+      cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4)
+
+      confidence0 = annot[row, col, FLAGS.nclass]
+
+      if confidence0 > 0:
+        print (annot[row, col, :])
+        idx = int(1 + np.argmax(annot[row, col, :FLAGS.nclass]))
+        _color = palette[idx]
+        color = (int(_color[2]), int(_color[1]), int(_color[0]))
+        name = common.idx2obj[idx]
+        print('name:'+ name)
+        for k in range(FLAGS.B):
+          b = FLAGS.nclass + k*(1 + 4)
+          e = b + (1 + 4)
+          c, cx, cy, nw, nh = annot[row, col, b:e]
+
+          if c > 0:
+            print('nw,nh: {}, {}'.format(nw, nh))
+
+            (y_loc, x_loc) = (row, col)
+
+            cx = grid_size*(x_loc + cx + 0.5)
+            cy = grid_size*(y_loc + cy + 0.5)
+            bw = FLAGS.img_size*nw
+            bh = FLAGS.img_size*nh
+
+            grid_b = (int(grid_size*x_loc), int(grid_size*y_loc))
+            grid_e = (int(grid_size*(x_loc+1)), int(grid_size*(y_loc+1)))
+
+            b = (int(cx - 0.5*bw), int(cy - 0.5*bh))
+            e = (int(cx + 0.5*bw), int(cy + 0.5*bh))
+            print("b, e")
+            print(b, e)
+            vis_grid= cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
+            img = cv2.rectangle(img, b, e, color, 5)
+            img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
+            img = cv2.circle(img, (int(cx), int(cy)), 4, color, -1)
+
+  img = 0.7*img + 0.3*vis_grid
+  return img
 
 def load_annots(filelist):
   def load_annot(path):
@@ -56,10 +111,10 @@ def load_annots(filelist):
     annot = np.load(path, encoding='bytes')
     print("original dims: {}x{}".format(annot[0,0], annot[0,1]))
     return  annot
-    
+
   _annots = [os.path.join(FLAGS.train_annot_dir, filename + ".npy") for filename in filelist]
 
-  annots = map(load_annot, _annots) 
+  annots = map(load_annot, _annots)
 
   return annots
 
@@ -70,7 +125,7 @@ def build_feed_annots(_feed_annots):
 
   cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4)
   feed_annots = np.zeros((batch_size, FLAGS.num_grid, FLAGS.num_grid, cell_info_dim), np.float32)
- 
+
   # scale and translation
   # input image is resized 537x537
   # we will choose random crop size and offset, and resize into 428x428
@@ -89,30 +144,41 @@ def build_feed_annots(_feed_annots):
     _w, _h = _annot[0, :2]
     scale = scales[i, 0] # w, h scale is same
     w, h = (_w*scale, _h*scale)
-    offset = offsets[i]
+    w_grid, h_grid = (w/FLAGS.num_grid, h/FLAGS.num_grid)
     print ('A')
-    print(offset)
+    print ('scale:{}'.format(scale))
+    (_offset_y, _offset_x) = offsets[i]
+    print('_offset:{}, {}'.format(_offset_x, _offset_y))
+    print(_w, _h)
+    (offset_x, offset_y) = (_w*_offset_x, _h*_offset_y)
+    print('offset:{}, {}'.format(offset_x, offset_y))
     print _annot
-    annot[1:, 1:3] = _annot[1:, 1:3] - offset[0]
-    annot[1:, 3:5] = _annot[1:, 3:5] - offset[1]
+    annot[1:, 1:3] = _annot[1:, 1:3] - offset_x
+    annot[1:, 3:5] = _annot[1:, 3:5] - offset_y
     print ('B')
     print annot
-    w_grid, h_grid = (w/FLAGS.num_grid, h/FLAGS.num_grid)
-    
+
+    annot[1:, 1:3] = annot[1:, 1:3]
+    annot[1:, 3:5] = annot[1:, 3:5]
     _annot_data = {}
     for box in annot[1:]:
       idx, x1, x2, y1, y2 = box
+      x1 = max(0.0, x1)
+      x2 = min(w, x2)
+      y1 = max(0.0, y1)
+      y2 = min(h, y2)
+
       idx = int(idx)
-      (x_loc, y_loc), (cx, cy, bw, bh) = common.cal_rel_coord((w, h), (x1, x2, y1, y2), (w_grid, h_grid))
+      (x_loc, y_loc), (cx, cy, nw, nh) = common.cal_rel_coord((w, h), (x1, x2, y1, y2), (w_grid, h_grid))
 
       # if object is still on cropped region
       if x_loc >= 0 and x_loc < 7 and y_loc >= 0 and y_loc < 7:
         if not (x_loc, y_loc) in _annot_data.keys():
           _annot_data[(x_loc, y_loc)] = (idx, [])
-          _annot_data[(x_loc, y_loc)][1].append((1.0, cx, cy, bw, bh))
+          _annot_data[(x_loc, y_loc)][1].append((1.0, cx, cy, nw, nh))
         elif _annot_data[(x_loc, y_loc)][0] == idx:
-          _annot_data[(x_loc, y_loc)][1].append((1.0, cx, cy, bw, bh))
-      
+          _annot_data[(x_loc, y_loc)][1].append((1.0, cx, cy, nw, nh))
+
     for (x_loc, y_loc), (idx, bbs)  in _annot_data.items():
       print (x_loc, y_loc), (idx, bbs)
       feed_annots[i, y_loc, x_loc, idx-1] = 1
@@ -297,7 +363,7 @@ def conv_relu(tensor, W, B, name, reuse):
 
 #  mean, var = tf.nn.moments(biased, [0, 2, 3], keep_dims=True)
 #  normalized = tf.nn.batch_normalization(biased, mean, var, 0, 1, 0.0001)
-  normalized = batch_norm_layer(biased, "bne" + name, reuse) 
+  normalized = batch_norm_layer(biased, "bne" + name, reuse)
   relued = leaky_relu(normalized)
 
   return relued
@@ -530,10 +596,11 @@ def main(args):
           # crop region
           cr = feed_scaletrans[0]*FLAGS.img_orig_size
           cr = cr.astype(np.int)
-
           orig_img = common.visualization(orig_img, _feed_annots[0], FLAGS.num_grid, palette )
           orig_img = cv2.rectangle(orig_img, (cr[1], cr[0]), (cr[3], cr[2]), (255,255,255), 2)
+
           aug_img = cv2.cvtColor(aug_val[0], cv2.COLOR_RGB2BGR)
+          aug_img = visualization2(aug_img, feed_annots[0], palette)
           cv2.imshow('input', common.img_listup([orig_img, aug_img]))
 
         key = cv2.waitKey(0)
