@@ -82,7 +82,11 @@ def load_pretrained(filepath):
 def img_listup(imgs):
   size = len(imgs)
   (h, w) = imgs[0].shape[:2]
-  out = np.zeros((h, w*size, 3), np.uint8)
+
+  total_w = 0
+  for img in imgs:
+    total_w += img.shape[1]
+  out = np.zeros((h, total_w, 3), np.uint8)
 
   offset = 0
   for i in range(size):
@@ -175,8 +179,8 @@ class VOC2012(DataCenter):
     return self._getPair(self.validpairs, idx)
 
 def cal_rel_coord(w, h, x1, x2, y1, y2, w_grid, h_grid):
-  print('cal_rel_coord')
-  print(w,h, x1, x2, y1, y2, w_grid, h_grid)
+  #print('cal_rel_coord')
+  #print(w,h, x1, x2, y1, y2, w_grid, h_grid)
   cx, cy = ((x1 + x2)/2.0, (y1 + y2)/2.0)
   nw, nh = ((x2 - x1)/w, (y2 - y1)/h)
 
@@ -191,9 +195,6 @@ def cal_rel_coord(w, h, x1, x2, y1, y2, w_grid, h_grid):
 def visualization(img, _annot, num_grid, palette):
   print("visualization()")
   h, w = img.shape[:2]
-  print(h, w)
-  print(_annot)
-
   grid_size = float(h)/num_grid
 
   w_grid, h_grid = (w/num_grid, h/num_grid)
@@ -204,7 +205,6 @@ def visualization(img, _annot, num_grid, palette):
     idx = int(idx)
     _color = palette[idx]
     color = (int(_color[2]), int(_color[1]), int(_color[0]))
-    print("color:{}".format(color))
 
     name = idx2obj[idx]
 
