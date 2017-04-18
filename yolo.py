@@ -47,7 +47,7 @@ def load_imgs(filelist):
 
   _imgs = [os.path.join(FLAGS.train_img_dir, filename + ".png") for filename in filelist]
 
-  imgs = map(load_img,_imgs)
+  imgs = [load_img(_img) for _img in _imgs]
   return imgs
 
 def visualization2(img, annot, palette):
@@ -107,14 +107,14 @@ def visualization2(img, annot, palette):
 
 def load_annots(filelist):
   def load_annot(path):
-    print path
+    print(path)
     annot = np.load(path, encoding='bytes')
     print("original dims: {}x{}".format(annot[0,0], annot[0,1]))
     return  annot
 
   _annots = [os.path.join(FLAGS.train_annot_dir, filename + ".npy") for filename in filelist]
 
-  annots = map(load_annot, _annots)
+  annots = [load_annot(_annot) for _annot in _annots]
 
   return annots
 
@@ -152,11 +152,11 @@ def build_feed_annots(_feed_annots):
     print(_w, _h)
     (offset_x, offset_y) = (_w*_offset_x, _h*_offset_y)
     print('offset:{}, {}'.format(offset_x, offset_y))
-    print _annot
+    print(_annot)
     annot[1:, 1:3] = _annot[1:, 1:3] - offset_x
     annot[1:, 3:5] = _annot[1:, 3:5] - offset_y
-    print ('B')
-    print annot
+    print('B')
+    print( annot)
 
     annot[1:, 1:3] = annot[1:, 1:3]
     annot[1:, 3:5] = annot[1:, 3:5]
@@ -169,7 +169,7 @@ def build_feed_annots(_feed_annots):
       y2 = min(h, y2)
 
       idx = int(idx)
-      (x_loc, y_loc), (cx, cy, nw, nh) = common.cal_rel_coord((w, h), (x1, x2, y1, y2), (w_grid, h_grid))
+      (x_loc, y_loc), (cx, cy, nw, nh) = common.cal_rel_coord(w, h, x1, x2, y1, y2, w_grid, h_grid)
 
       # if object is still on cropped region
       if x_loc >= 0 and x_loc < 7 and y_loc >= 0 and y_loc < 7:
@@ -221,79 +221,42 @@ def augment_scale_translate(images, boxes, scale_range=0.2):
   print("images:", images)
   return images
 
-def random_crop(value, size, seed=None, name=None):
-  """Randomly crops a tensor to a given size.
-  Slices a shape `size` portion out of `value` at a uniformly chosen offset.
-  Requires `value.shape >= size`.
-  If a dimension should not be cropped, pass the full size of that dimension.
-  For example, RGB images can be cropped with
-  `size = [crop_height, crop_width, 3]`.
-  Args:
-    value: Input tensor to crop.
-    size: 1-D tensor with size the rank of `value`.
-    seed: Python integer. Used to create a random seed. See
-      @{tf.set_random_seed}
-      for behavior.
-    name: A name for this operation (optional).
-  Returns:
-    A cropped tensor of the same rank as `value` and shape `size`.
-  """
-  # TODO(shlens): Implement edge case to guarantee output size dimensions.
-  # If size > value.shape, zero pad the result so that it always has shape
-  # exactly size.
-  with ops.name_scope(name, "random_crop", [value, size]) as name:
-    value = ops.convert_to_tensor(value, name="value")
-    size = ops.convert_to_tensor(size, dtype=dtypes.int32, name="size")
-    shape = array_ops.shape(value)
-    check = control_flow_ops.Assert(
-        math_ops.reduce_all(shape >= size),
-        ["Need value.shape >= size, got ", shape, size])
-    shape = control_flow_ops.with_dependencies([check], shape)
-    limit = shape - size + 1
-    offset = random_uniform(
-        array_ops.shape(shape),
-        dtype=size.dtype,
-        maxval=size.dtype.max,
-        seed=seed) % limit
-    return array_ops.slice(value, offset, size, name=name)
-
-def get_inputs(img_list, annot_list):
-
-  # reference: http://stackoverflow.com/questions/34783030/saving-image-files-in-tensorflow
-
-  print(img_list[:10])
-  print(annot_list[:10])
-  print(FLAGS.batch_size)
-
-  img_queue = tf.train.string_input_producer(img_list, num_epochs=1, shuffle=False, seed=0)
-  reader = tf.WholeFileReader()
-  key0, value = reader.read(img_queue)
-  decoded = tf.image.decode_png(value)
-
-  annot_queue = tf.train.string_input_producer(annot_list, num_epochs=1, shuffle=False, seed=0)
-  cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4)
-  label_bytes = 4*FLAGS.num_grid*FLAGS.num_grid*cell_info_dim
-  reader = tf.FixedLengthRecordReader(record_bytes=label_bytes)
-  key1, value = reader.read(annot_queue)
-  annot = tf.decode_raw(value, tf.float32)
-  annot = tf.reshape(annot, [FLAGS.num_grid, FLAGS.num_grid, -1])
-
-#  return tf.train.shuffle_batch([key, decoded, annot],
-#                                 batch_size=FLAGS.batch_size,
-#                                 num_threads=FLAGS.num_threads,
-#                                 capacity=10,
-#                                 min_after_dequeue=2,
-#                                 shapes=[[], [FLAGS.img_size, FLAGS.img_size, FLAGS.channel], [FLAGS.num_grid, FLAGS.num_grid, cell_info_dim]]
-#                                 )
-
-  return tf.train.batch([key0, key1, decoded, annot],
-                         batch_size=FLAGS.batch_size,
-                         #num_threads=FLAGS.num_threads,
-                         num_threads=2,
-                         capacity=2,
-                         shapes=[[], [], [FLAGS.img_size, FLAGS.img_size, FLAGS.channel], [FLAGS.num_grid, FLAGS.num_grid, cell_info_dim]]
-                         )
-
+#def random_crop(value, size, seed=None, name=None):
+#  """Randomly crops a tensor to a given size.
+#  Slices a shape `size` portion out of `value` at a uniformly chosen offset.
+#  Requires `value.shape >= size`.
+#  If a dimension should not be cropped, pass the full size of that dimension.
+#  For example, RGB images can be cropped with
+#  `size = [crop_height, crop_width, 3]`.
+#  Args:
+#    value: Input tensor to crop.
+#    size: 1-D tensor with size the rank of `value`.
+#    seed: Python integer. Used to create a random seed. See
+#      @{tf.set_random_seed}
+#      for behavior.
+#    name: A name for this operation (optional).
+#  Returns:
+#    A cropped tensor of the same rank as `value` and shape `size`.
+#  """
+#  # TODO(shlens): Implement edge case to guarantee output size dimensions.
+#  # If size > value.shape, zero pad the result so that it always has shape
+#  # exactly size.
+#  with ops.name_scope(name, "random_crop", [value, size]) as name:
+#    value = ops.convert_to_tensor(value, name="value")
+#    size = ops.convert_to_tensor(size, dtype=dtypes.int32, name="size")
+#    shape = array_ops.shape(value)
+#    check = control_flow_ops.Assert(
+#        math_ops.reduce_all(shape >= size),
+#        ["Need value.shape >= size, got ", shape, size])
+#    shape = control_flow_ops.with_dependencies([check], shape)
+#    limit = shape - size + 1
+#    offset = random_uniform(
+#        array_ops.shape(shape),
+#        dtype=size.dtype,
+#        maxval=size.dtype.max,
+#        seed=seed) % limit
+#    return array_ops.slice(value, offset, size, name=name)
+#
 
 def init_YOLOBE():
   def init_with_normal():
@@ -469,12 +432,6 @@ def calculate_loss(y, out):
   loss = coord_term + class_term
   return loss
 
-def aug_scale_translate((filename, img, annot)):
-  print(filename)
-
-  img = cv2.resize(img, (FLAGS.img_size, FLAGS.img_size))
-  return img
-
 def main(args):
 
   colormap, palette = common.build_colormap_lookup(21)
@@ -497,14 +454,11 @@ def main(args):
   img_list = [os.path.join(FLAGS.train_img_dir, filename + ".png") for filename in filelist]
   annot_list = [os.path.join(FLAGS.train_annot_dir, filename + ".label") for filename in filelist]
 
-  #data = zip(filelist, img_list, annot_list)
-  #key0, key1, data, label = get_inputs(img_list[:20], annot_list[:20])
-
   mean = tf.constant(np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32))
 
 
   aug = augment_scale_translate(_x, _st)
-  #aug = tf.map_fn(lambda x:augment_brightness_saturation(x), _x)
+  aug = tf.map_fn(lambda x:augment_brightness_saturation(x), aug)
   x = tf.cast(aug, dtype=tf.float32) - mean
 
   with tf.device(FLAGS.device):
@@ -566,7 +520,7 @@ def main(args):
       print("#####################################################################")
       print("1:")
       #random.shuffle(filelist)
-      for itr in xrange(0, len(filelist)//FLAGS.batch_size):
+      for itr in range(0, len(filelist)//FLAGS.batch_size):
         print("===================================================================")
         print("[{}] {}/{}".format(epoch, itr, datacenter.size))
 

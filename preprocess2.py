@@ -24,16 +24,6 @@ tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base direct
 tf.flags.DEFINE_string("train_img_dir", "./train_img", "base directory for data")
 tf.flags.DEFINE_string("train_annot_dir", "./train_annot", "base directory for data")
 
-
-def cal_rel_coord((x, y), (grid_x_size, grid_y_size)):
-
-  x_loc = x//grid_x_size
-  x = float(x - x_loc* grid_x_size)/grid_x_size - 0.5
-  y_loc = y//grid_y_size
-  y = float(y - y_loc* grid_y_size)/grid_y_size - 0.5
-
-  return (x, y), (int(x_loc),int( y_loc))
-
 def main(args):
 
   if not os.path.exists(FLAGS.train_img_dir):
@@ -52,17 +42,17 @@ def main(args):
 
   with open(os.path.join(info_path, 'trainval.txt')) as f:
     _filelist = f.readlines()
-    filelist = [ filename.rstrip() for filename in _filelist] 
+    filelist = [ filename.rstrip() for filename in _filelist]
 
   #if not os.path.isfile(FLAGS.filelist):
-  with open(FLAGS.filelist, "wb+") as out:
-    data = filelist
+  with open(FLAGS.filelist, "w+") as out:
+    data = [filename for filename in filelist]
     json.dump(data, out, indent=2)
 
-  max_object = -1 
+  max_object = -1
   annot_list = []
   for filename in tqdm(filelist, desc="537x537 resize build annotation..."):
-    
+
     # resize 537x537 (537=448*1.2)
     jpg_file = os.path.join(img_path, filename + '.jpg')
     img = cv2.imread(jpg_file)

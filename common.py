@@ -174,7 +174,7 @@ class VOC2012(DataCenter):
   def getValPair(self, idx):
     return self._getPair(self.validpairs, idx)
 
-def cal_rel_coord((w, h), (x1, x2, y1, y2), (w_grid, h_grid)):
+def cal_rel_coord(w, h, x1, x2, y1, y2, w_grid, h_grid):
   print('cal_rel_coord')
   print(w,h, x1, x2, y1, y2, w_grid, h_grid)
   cx, cy = ((x1 + x2)/2.0, (y1 + y2)/2.0)
