@@ -197,6 +197,10 @@ def augment_brightness_saturation(image):
   image = tf.image.random_saturation(image, lower=0.7, upper=1.3)
   return image
 
+def augment_gaussian_noise(images, std=0.2):
+  noise = tf.random_normal(shape=tf.shape(images), mean=0.0, stddev=std, dtype=tf.float32)
+  return images + noise
+
 def augment_scale_translate(images, boxes, scale_range=0.2):
 
   #batch_size = images.get_shape()[0]
@@ -460,6 +464,7 @@ def main(args):
   aug = augment_scale_translate(_x, _st)
   aug = tf.map_fn(lambda x:augment_brightness_saturation(x), aug)
   x = tf.cast(aug, dtype=tf.float32) - mean
+  x = augment_gaussian_noise(x)
 
   with tf.device(FLAGS.device):
 
