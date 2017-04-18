@@ -14,15 +14,17 @@ import random
 from PIL import Image
 
 FLAGS = tf.flags.FLAGS
-tf.flags.DEFINE_string("device", "/cpu:*", "device")
-#tf.flags.DEFINE_string("device", "/gpu:*", "device")
+#tf.flags.DEFINE_string("device", "/cpu:*", "device")
+tf.flags.DEFINE_string("device", "/gpu:*", "device")
 tf.flags.DEFINE_integer("max_epoch", "200", "maximum iterations for training")
 #tf.flags.DEFINE_integer("batch_size", "64", "batch size for training")
-tf.flags.DEFINE_integer("batch_size", "2", "batch size for training")
+tf.flags.DEFINE_integer("batch_size", "32", "batch size for training")
 tf.flags.DEFINE_integer("B", "2", "number of Bound Box in grid cell")
 tf.flags.DEFINE_integer("num_grid", "7", "number of grids vertically, horizontally")
 tf.flags.DEFINE_integer("nclass", "20", "class num")
+tf.flags.DEFINE_float("confidence", "0.5", "confidence limit")
 tf.flags.DEFINE_float("learning_rate", "1e-3", "Learning rate for Adam Optimizer")
+tf.flags.DEFINE_float("momentum", "0.9", "momentum for Momentum Optimizer")
 tf.flags.DEFINE_float("eps", "1e-5", "epsilon for various operation")
 tf.flags.DEFINE_float("beta1", "0.5", "beta1 for Adam optimizer")
 tf.flags.DEFINE_float("pt_w", "0.1", "weight of pull-away term")
@@ -50,66 +52,84 @@ def load_imgs(filelist):
   imgs = [load_img(_img) for _img in _imgs]
   return imgs
 
-def visualization2(img, annot, palette):
+def visualization2(img, annot, palette, out=False):
   print("visualization2()")
   h, w = img.shape[:2]
 
   num_grid = annot.shape[0]
   grid_size = FLAGS.img_size/num_grid
-  print(h, w)
-  print(annot.shape)
-  print("grid_size:{}".format(grid_size))
-
   vis_grid = np.zeros_like(img)
 
   for row in range(num_grid):
     for col in range(num_grid):
       cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4)
+      #confidence0 = annot[row, col, FLAGS.nclass] # confidence value of the first object
 
-      confidence0 = annot[row, col, FLAGS.nclass]
+      idx = int(1 + np.argmax(annot[row, col, :FLAGS.nclass]))
+      _color = palette[idx]
+      color = (int(_color[2]), int(_color[1]), int(_color[0]))
+      name = common.idx2obj[idx]
+      for k in range(FLAGS.B):
+        b = FLAGS.nclass + k*(1 + 4)
+        e = b + (1 + 4)
+        c, cx, cy, nw, nh = annot[row, col, b:e]
 
-      if confidence0 > 0:
-        print (annot[row, col, :])
-        idx = int(1 + np.argmax(annot[row, col, :FLAGS.nclass]))
-        _color = palette[idx]
-        color = (int(_color[2]), int(_color[1]), int(_color[0]))
-        name = common.idx2obj[idx]
-        print('name:'+ name)
-        for k in range(FLAGS.B):
-          b = FLAGS.nclass + k*(1 + 4)
-          e = b + (1 + 4)
-          c, cx, cy, nw, nh = annot[row, col, b:e]
+        if c > FLAGS.confidence:
+          (y_loc, x_loc) = (row, col)
 
-          if c > 0:
-            print('nw,nh: {}, {}'.format(nw, nh))
+          cx = grid_size*(x_loc + cx + 0.5)
+          cy = grid_size*(y_loc + cy + 0.5)
+          bw = FLAGS.img_size*nw
+          bh = FLAGS.img_size*nh
 
-            (y_loc, x_loc) = (row, col)
+#          print("{} is located at ({}, {})".format(name, row, col))
+#          print("WxH at {}x{}".format(bw, bh))
 
-            cx = grid_size*(x_loc + cx + 0.5)
-            cy = grid_size*(y_loc + cy + 0.5)
-            bw = FLAGS.img_size*nw
-            bh = FLAGS.img_size*nh
+          grid_b = (int(grid_size*x_loc), int(grid_size*y_loc))
+          grid_e = (int(grid_size*(x_loc+1)), int(grid_size*(y_loc+1)))
 
-            grid_b = (int(grid_size*x_loc), int(grid_size*y_loc))
-            grid_e = (int(grid_size*(x_loc+1)), int(grid_size*(y_loc+1)))
+          b = (int(cx - 0.5*bw), int(cy - 0.5*bh))
+          e = (int(cx + 0.5*bw), int(cy + 0.5*bh))
 
-            b = (int(cx - 0.5*bw), int(cy - 0.5*bh))
-            e = (int(cx + 0.5*bw), int(cy + 0.5*bh))
-            print("b, e")
-            print(b, e)
-            vis_grid= cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
-            img = cv2.rectangle(img, b, e, color, 5)
-            img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
-            img = cv2.circle(img, (int(cx), int(cy)), 4, color, -1)
+          vis_grid= cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
+          img = cv2.rectangle(img, b, e, color, 5)
+          img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
+          img = cv2.circle(img, (int(cx), int(cy)), 4, color, -1)
 
   img = 0.7*img + 0.3*vis_grid
   return img
 
+def compare(annot, out_annot):
+  num_grid = annot.shape[0]
+  grid_size = FLAGS.img_size/num_grid
+
+  for row in range(num_grid):
+    for col in range(num_grid):
+      idx = int(1 + np.argmax(annot[row, col, :FLAGS.nclass]))
+      name = common.idx2obj[idx]
+
+      for k in range(FLAGS.B):
+        b = FLAGS.nclass + k*(1 + 4)
+        e = b + (1 + 4)
+        c, cx, cy, nw, nh = annot[row, col, b:e]
+
+        if c > FLAGS.confidence:
+          out_idx = int(1 + np.argmax(out_annot[row, col, :FLAGS.nclass]))
+          out_name = common.idx2obj[out_idx]
+          out_c, out_cx, out_cy, out_nw, out_nh = out_annot[row, col, b:e]
+
+          print("at ({}, {})".format(row, col))
+          print("class: {} vs {}".format(name, out_name))
+          print("confidence:{} vs {}".format(c, out_c))
+          print("x, y: ({}, {}) vs ({}, {})".format(cx, cy, out_cx, out_cy))
+          print("w, h: {}x{} vs {}x{}".format(nw, nh, out_nw, out_nh))
+
+
 def load_annots(filelist):
   def load_annot(path):
-    print(path)
+    #print(path)
     annot = np.load(path, encoding='bytes')
-    print("original dims: {}x{}".format(annot[0,0], annot[0,1]))
+    #print("original dims: {}x{}".format(annot[0,0], annot[0,1]))
     return  annot
 
   _annots = [os.path.join(FLAGS.train_annot_dir, filename + ".npy") for filename in filelist]
@@ -119,8 +139,6 @@ def load_annots(filelist):
   return annots
 
 def build_feed_annots(_feed_annots):
-  print("build_feed_annots()")
-  print(_feed_annots)
   batch_size = len(_feed_annots)
 
   cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4)
@@ -135,8 +153,6 @@ def build_feed_annots(_feed_annots):
   ends = offsets + scales
   feed_scaletrans = np.concatenate([offsets, ends], axis=1)
 
-  print (feed_scaletrans)
-
   # build augmented annotations
   for i, _annot in enumerate(_feed_annots):
     # each image
@@ -145,18 +161,16 @@ def build_feed_annots(_feed_annots):
     scale = scales[i, 0] # w, h scale is same
     w, h = (_w*scale, _h*scale)
     w_grid, h_grid = (w/FLAGS.num_grid, h/FLAGS.num_grid)
-    print ('A')
-    print ('scale:{}'.format(scale))
+    #print ('scale:{}'.format(scale))
     (_offset_y, _offset_x) = offsets[i]
-    print('_offset:{}, {}'.format(_offset_x, _offset_y))
-    print(_w, _h)
+    #print('_offset:{}, {}'.format(_offset_x, _offset_y))
+    #print(_w, _h)
     (offset_x, offset_y) = (_w*_offset_x, _h*_offset_y)
-    print('offset:{}, {}'.format(offset_x, offset_y))
-    print(_annot)
+    #print('offset:{}, {}'.format(offset_x, offset_y))
+    #print(_annot)
     annot[1:, 1:3] = _annot[1:, 1:3] - offset_x
     annot[1:, 3:5] = _annot[1:, 3:5] - offset_y
-    print('B')
-    print( annot)
+    #print( annot)
 
     annot[1:, 1:3] = annot[1:, 1:3]
     annot[1:, 3:5] = annot[1:, 3:5]
@@ -180,7 +194,7 @@ def build_feed_annots(_feed_annots):
           _annot_data[(x_loc, y_loc)][1].append((1.0, cx, cy, nw, nh))
 
     for (x_loc, y_loc), (idx, bbs)  in _annot_data.items():
-      print (x_loc, y_loc), (idx, bbs)
+      #print (x_loc, y_loc, idx, bbs)
       feed_annots[i, y_loc, x_loc, idx-1] = 1
       for bbi in range(min(2, len(bbs))):
         b = FLAGS.nclass + (1 + 4)*bbi
@@ -204,7 +218,8 @@ def augment_gaussian_noise(images, std=0.2):
 def augment_scale_translate(images, boxes, scale_range=0.2):
 
   #batch_size = images.get_shape()[0]
-  batch_size = FLAGS.batch_size
+  batch_size = FLAGS.batch_size # this value should be fixed up
+
   # Translation
   scale = 1.0 + tf.random_uniform([1], minval=0.0, maxval=scale_range)
   size = tf.constant([FLAGS.img_size, FLAGS.img_size])
@@ -213,8 +228,7 @@ def augment_scale_translate(images, boxes, scale_range=0.2):
 
   print("images:", images)
   box_ind = tf.range(start=0, limit=batch_size, dtype=tf.int32)
-  print("box_ind:", box_ind)
-  print("AAAAAAAA:", box_ind.dtype.max)
+
   images = tf.image.crop_and_resize(
       images,
       boxes=boxes,
@@ -361,8 +375,9 @@ def model_YOLO(x, WEs, BEs, WFCs, BFCs, drop_prob = 0.5, reuse=False):
   relued = conv_relu(relued, WEs, BEs, '24', reuse)
 
   # fully-connected step
-  batch_size = relued.get_shape()[0]
-  fc = tf.reshape(relued, shape=[batch_size, -1]) # [batch_size, 7*7*1024]
+  #batch_size = relued.get_shape()[0]
+  #fc = tf.reshape(relued, shape=[batch_size, -1]) # [batch_size, 7*7*1024]
+  fc = tf.reshape(relued, shape=[-1, 7*7*1024])
 
   fc = tf.nn.bias_add(tf.matmul(fc, WFCs['1']), BFCs['1'])
 
@@ -378,15 +393,16 @@ def model_YOLO(x, WEs, BEs, WFCs, BFCs, drop_prob = 0.5, reuse=False):
   return final
 
 def get_opt(loss, scope):
+
   var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope)
 
-  print("============================")
+  print("==get_opt()============================")
   print(scope)
   for item in var_list:
     print(item.name)
   # Optimizer: set up a variable that's incremented once per batch and
   # controls the learning rate decay.
-#  batch = tf.Variable(0, dtype=tf.int32)
+  batch = tf.Variable(0, dtype=tf.int32)
   # Decay once per epoch, using an exponential schedule starting at 0.01.
 #  learning_rate = tf.train.exponential_decay(
 #      FLAGS.learning_rate,                # Base learning rate.
@@ -395,23 +411,27 @@ def get_opt(loss, scope):
 #      FLAGS.weight_decay,                # Decay rate.
 #      staircase=True)
   # Use simple momentum for the optimization.
-#  optimizer = tf.train.MomentumOptimizer(learning_rate,
-#                                         FLAGS.momentum).minimize(loss,
-#                                                       var_list=var_list,
-#                                                       global_step=batch)
-#
-#  return optimizer
-  optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate, beta1=FLAGS.beta1)
-  grads = optimizer.compute_gradients(loss, var_list=var_list)
-  return optimizer.apply_gradients(grads)
+  optimizer = tf.train.MomentumOptimizer(FLAGS.learning_rate,
+                                         FLAGS.momentum).minimize(loss,
+                                                       var_list=var_list,
+                                                       global_step=batch)
+
+  return optimizer
+#  return tf.train.AdamOptimizer(0.0001).minimize(loss)
+#  optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate, beta1=FLAGS.beta1)
+#  grads = optimizer.compute_gradients(loss, var_list=var_list)
+#  return optimizer.apply_gradients(grads)
 
 def calculate_loss(y, out):
   # devide y into each boundbox infos and class info
-  yC, yBBs = tf.split(value=y, num_or_size_splits=[FLAGS.nclass, 5*FLAGS.B], axis=3)
+  bbboxs_dim = 5*FLAGS.B
+  yClass, yBBs = tf.split(value=y, num_or_size_splits=[FLAGS.nclass, bbboxs_dim], axis=3)
+  obj, _ = tf.split(value=yBBs, num_or_size_splits=[1, bbboxs_dim - 1], axis=3)
   yBBs = tf.split(value=yBBs, num_or_size_splits=[5]*FLAGS.B, axis=3)
 
   # devide output into each boundbox infos and class info
-  C, BBs = tf.split(value=out, num_or_size_splits=[FLAGS.nclass, 5*FLAGS.B], axis=3)
+  Class, BBs = tf.split(value=out, num_or_size_splits=[FLAGS.nclass, bbboxs_dim], axis=3)
+  Class = tf.nn.softmax(Class)
   BBs = tf.split(value=BBs, num_or_size_splits=[5]*FLAGS.B, axis=3)
 
   # calculate boundbox infos
@@ -419,22 +439,54 @@ def calculate_loss(y, out):
   lambda_noobj = 0.5
 
   coord_term  = 0
+
+  out_post = Class
   for i in range(FLAGS.B):
     yC, yXY, yWH = tf.split(value=yBBs[i], num_or_size_splits=[1, 2, 2], axis=3)
+
     C, XY, WH  = tf.split(value=BBs[i], num_or_size_splits=[1, 2, 2], axis=3)
+    C = tf.nn.sigmoid(C)
+    XY = tf.nn.tanh(XY)
+    WH = tf.clip_by_value(tf.nn.sigmoid(WH), 1e-6, 1.0)
+
+    Cdiff = tf.square(yC - C)
 
     coord_term += lambda_coord*tf.reduce_sum(yC*tf.square(yXY - XY))
     coord_term += lambda_coord*tf.reduce_sum(yC*tf.square(tf.sqrt(yWH) -tf.sqrt(WH)))
-    coord_term += tf.reduce_sum(yC*(yC- C))
-    coord_term += lambda_noobj*tf.reduce_sum((1 - yC)*(yC- C))
+    coord_term += tf.reduce_sum(yC*Cdiff)
+    coord_term += lambda_noobj*tf.reduce_sum((1 - yC)*Cdiff)
+
+    out_post = tf.concat([out_post, C, XY, WH], axis=3)
 
   # calculate boundbox infos
-  obj, _ = tf.split(value=yBBs, num_or_size_splits=[1, 4], axis=3)
   noobj = 1 - obj
-  class_term = tf.reduce_sum(obj * tf.square(yC - C))
+  class_term = tf.reduce_sum(obj * tf.square(yClass - Class))
 
   loss = coord_term + class_term
-  return loss
+
+  #return loss, out_post
+  return loss, out_post
+
+def evaluate(sess, filelist, x, y, out, accuracy):
+  size = len(filelist)
+  itr_size = size//FLAGS.batch_size
+  total_accuracy_val = 0
+  for itr in range(0, itr_size):
+    print("===================================================================")
+    print("[{}] {}/{}".format(epoch, itr, datacenter.size))
+
+    # build minibatch
+    #batch_size = min(FLAGS.batch_size, datacenter.size - itr)
+    _batch = filelist[itr:itr + FLAGS.batch_size]
+
+    feed_imgs = load_imgs(_batch)
+    _feed_annots = load_annots(_batch)
+
+    feed_scaletrans, feed_annots = build_feed_annots(_feed_annots)
+    accuracy_val = sess.run(accuracy, feed_dict=feed_dict)
+    total_accuracy_val += accuracy_val
+
+  return total_accuracy_val / itr_size
 
 def main(args):
 
@@ -465,35 +517,33 @@ def main(args):
   aug = tf.map_fn(lambda x:augment_brightness_saturation(x), aug)
   x = tf.cast(aug, dtype=tf.float32) - mean
   x = augment_gaussian_noise(x)
+  y = _y
 
-  with tf.device(FLAGS.device):
+#  with tf.device(FLAGS.device):
+  x = tf.transpose(x, perm=[0, 3, 1, 2])
+  print("0. input setup is done.")
 
-    x = tf.transpose(x, perm=[0, 3, 1, 2])
-    print("0. input setup is done.")
 
+  with tf.variable_scope("vgg_16") as scope:
+    Ws, Bs = vgg_16.init_VGG16(pretrained)
 
-#    with tf.variable_scope("vgg_16") as scope:
-#      Ws, Bs = vgg_16.init_VGG16(pretrained)
-#
-#    with tf.variable_scope("YOLO") as scope:
-#      WEs, BEs, WFCs, BFCs, = init_YOLOBE()
-#
-#    print("1. variable setup is done.")
-#
-#    out = vgg_16.model_VGG16(x, Ws, Bs)
-#    out = model_YOLO(out, WEs, BEs, WFCs, BFCs)
-#    print("2. model setup is done.")
-#
-#    out = tf.transpose(out, perm=[0, 2, 3, 1])
-#    loss = calculate_loss(label, out)
-#    print("3. loss setup is done.")
-#
-#    opt = get_opt(loss, "YOLO")
-#    print("4. optimizer setup is done.")
-    W = tf.get_variable('test', shape=[3,3,3,3])
+  with tf.variable_scope("YOLO") as scope:
+    WEs, BEs, WFCs, BFCs, = init_YOLOBE()
 
-    init_op = tf.group(tf.global_variables_initializer(),
-                       tf.local_variables_initializer())
+  print("1. variable setup is done.")
+
+  _out = vgg_16.model_VGG16(x, Ws, Bs)
+  _out = model_YOLO(_out, WEs, BEs, WFCs, BFCs)
+  print("2. model setup is done.")
+
+  out = tf.transpose(_out, perm=[0, 2, 3, 1])
+  loss, out_post = calculate_loss(y, out)
+  print("3. loss setup is done.")
+  opt = get_opt(loss, "YOLO")
+  print("4. optimizer setup is done.")
+
+  init_op = tf.group(tf.global_variables_initializer(),
+                   tf.local_variables_initializer())
 
   print("all graph setup is done")
 
@@ -506,8 +556,8 @@ def main(args):
   with tf.Session(config=config) as sess:
     sess.run(init_op)
 
-    coord = tf.train.Coordinator()
-    threads = tf.train.start_queue_runners(sess, coord)
+#    coord = tf.train.Coordinator()
+#    threads = tf.train.start_queue_runners(sess, coord)
 
     saver = tf.train.Saver()
     checkpoint = tf.train.latest_checkpoint(FLAGS.save_dir)
@@ -540,38 +590,42 @@ def main(args):
 
         feed_dict = {_x: feed_imgs, _y: feed_annots, _st: feed_scaletrans}
 
-        #feed_dict = {_x: imgs, _y: annot}
-        data_val, aug_val, label_val = sess.run([_x, aug, _y], feed_dict=feed_dict)
+        _ = sess.run([opt], feed_dict=feed_dict)
 
+        print("loss: {}".format(sess.run(loss, feed_dict=feed_dict)))
         current = datetime.now()
         print('\telapsed:' + str(current - start))
 
-        if itr % 1 == 0:
-
-#          idx = obj2idx[annot['name']]
-#          _color = palette[idx]
-#          color = (int(_color[2]), int(_color[1]), int(_color[0]))
+        if itr % 5 == 0:
+          data_val, aug_val, label_val, out_val = sess.run([_x, aug, _y, out_post], feed_dict=feed_dict)
           orig_img = cv2.cvtColor(data_val[0],cv2.COLOR_RGB2BGR)
           # crop region
           cr = feed_scaletrans[0]*FLAGS.img_orig_size
           cr = cr.astype(np.int)
           orig_img = common.visualization(orig_img, _feed_annots[0], FLAGS.num_grid, palette )
           orig_img = cv2.rectangle(orig_img, (cr[1], cr[0]), (cr[3], cr[2]), (255,255,255), 2)
+          orig_img = cv2.resize(orig_img, (FLAGS.img_size, FLAGS.img_size))
 
           aug_img = cv2.cvtColor(aug_val[0], cv2.COLOR_RGB2BGR)
+          out_img = aug_img.copy()
           aug_img = visualization2(aug_img, feed_annots[0], palette)
-          cv2.imshow('input', common.img_listup([orig_img, aug_img]))
 
-        key = cv2.waitKey(0)
+          out_img = visualization2(out_img, out_val[0], palette, True)
+          cv2.imshow('input', common.img_listup([orig_img, aug_img, out_img]))
+
+          compare(feed_annots[0], out_val[0])
+
+          key = cv2.waitKey(10)
+
+        key = cv2.waitKey(10)
         if key == 27:
           sys.exit()
-        if itr > 1 and itr % 300 == 0:
+        if itr > 1 and itr % 500 == 0:
           #energy_d_val, loss_d_val, loss_g_val = sess.run([energy_d, loss_d, loss_g])
           print("#######################################################")
           #print "\tE=", energy_d_val, "Ld(x, z)=", loss_d, "Lg(z)=", loss_g
           saver.save(sess, checkpoint)
-    coord.request_stop()
-    coord.join(threads)
+
 
     cv2.destroyAllWindows()
 
