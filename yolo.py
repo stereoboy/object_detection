@@ -278,7 +278,7 @@ def augment_scale_translate(images, boxes, scale_range=0.2):
 
 def init_YOLOBE():
   def init_with_normal():
-    return tf.truncated_normal_initializer(mean=0.0, stddev=0.1)
+    return tf.truncated_normal_initializer(mean=0.0, stddev=0.02)
 
   WEs = {
       # step 5
@@ -298,18 +298,18 @@ def init_YOLOBE():
 
   BEs = {
       # step 5
-      "17":tf.get_variable('e_bias_17', shape = [512], initializer=init_with_normal()),
-      "18":tf.get_variable('e_bias_18', shape = [1024], initializer=init_with_normal()),
+      "17":tf.get_variable('e_bias_17', shape = [512], initializer=tf.zeros_initializer()),
+      "18":tf.get_variable('e_bias_18', shape = [1024], initializer=tf.zeros_initializer()),
 
-      "19":tf.get_variable('e_bias_19', shape = [512], initializer=init_with_normal()),
-      "20":tf.get_variable('e_bias_20', shape = [1024], initializer=init_with_normal()),
+      "19":tf.get_variable('e_bias_19', shape = [512], initializer=tf.zeros_initializer()),
+      "20":tf.get_variable('e_bias_20', shape = [1024], initializer=tf.zeros_initializer()),
 
-      "21":tf.get_variable('e_bias_21', shape = [1024], initializer=init_with_normal()),
-      "22":tf.get_variable('e_bias_22', shape = [1024], initializer=init_with_normal()),
+      "21":tf.get_variable('e_bias_21', shape = [1024], initializer=tf.zeros_initializer()),
+      "22":tf.get_variable('e_bias_22', shape = [1024], initializer=tf.zeros_initializer()),
 
       # step 6
-      "23":tf.get_variable('e_bias_23', shape = [1024], initializer=init_with_normal()),
-      "24":tf.get_variable('e_bias_24', shape = [1024], initializer=init_with_normal()),
+      "23":tf.get_variable('e_bias_23', shape = [1024], initializer=tf.zeros_initializer()),
+      "24":tf.get_variable('e_bias_24', shape = [1024], initializer=tf.zeros_initializer()),
       }
 
   WFCs = {
@@ -318,8 +318,8 @@ def init_YOLOBE():
       }
 
   BFCs = {
-      "1":tf.get_variable('fcb_1', shape = [4096], initializer=init_with_normal()),
-      "2":tf.get_variable('fcb_2', shape = [FLAGS.num_grid*FLAGS.num_grid*(FLAGS.nclass + 5*FLAGS.B)], initializer=init_with_normal()),
+      "1":tf.get_variable('fcb_1', shape = [4096], initializer=tf.zeros_initializer()),
+      "2":tf.get_variable('fcb_2', shape = [FLAGS.num_grid*FLAGS.num_grid*(FLAGS.nclass + 5*FLAGS.B)], initializer=tf.zeros_initializer()),
       }
 
   return WEs, BEs, WFCs, BFCs,
