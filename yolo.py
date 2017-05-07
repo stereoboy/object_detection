@@ -402,7 +402,8 @@ def get_opt(loss, scope):
     print(item.name)
   # Optimizer: set up a variable that's incremented once per batch and
   # controls the learning rate decay.
-  batch = tf.Variable(0, dtype=tf.int32)
+#  batch = tf.Variable(0, dtype=tf.int32)
+  global_step = tf.Variable(0, trainable=False)
   # Decay once per epoch, using an exponential schedule starting at 0.01.
 #  learning_rate = tf.train.exponential_decay(
 #      FLAGS.learning_rate,                # Base learning rate.
@@ -411,10 +412,13 @@ def get_opt(loss, scope):
 #      FLAGS.weight_decay,                # Decay rate.
 #      staircase=True)
   # Use simple momentum for the optimization.
-  optimizer = tf.train.MomentumOptimizer(FLAGS.learning_rate,
+
+  learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
+                                                 1, 0.0005, staircase=True)
+  optimizer = tf.train.MomentumOptimizer(learning_rate,
                                          FLAGS.momentum).minimize(loss,
                                                        var_list=var_list,
-                                                       global_step=batch)
+                                                       global_step=global_step)
 
   return optimizer
 #  return tf.train.AdamOptimizer(0.0001).minimize(loss)
