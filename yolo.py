@@ -74,6 +74,7 @@ def visualization2(img, annot, palette, out=False):
         e = b + (1 + 4)
         c, cx, cy, nw, nh = annot[row, col, b:e]
 
+        #c = np.max(annot[row, col, :FLAGS.nclass])
         if c > FLAGS.confidence:
           (y_loc, x_loc) = (row, col)
 
@@ -91,10 +92,13 @@ def visualization2(img, annot, palette, out=False):
           b = (int(cx - 0.5*bw), int(cy - 0.5*bh))
           e = (int(cx + 0.5*bw), int(cy + 0.5*bh))
 
+          print(b, e)
+
           vis_grid= cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
           img = cv2.rectangle(img, b, e, color, 5)
           img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
           img = cv2.circle(img, (int(cx), int(cy)), 4, color, -1)
+          #img = cv2.circle(img, (int(cx), int(cy)), 4, (255,255,255), -1)
 
   img = 0.7*img + 0.3*vis_grid
   return img
@@ -102,6 +106,9 @@ def visualization2(img, annot, palette, out=False):
 def compare(annot, out_annot):
   num_grid = annot.shape[0]
   grid_size = FLAGS.img_size/num_grid
+
+  print(out_annot[:, :, FLAGS.nclass])
+  print(np.argmax(out_annot[:, :, :FLAGS.nclass], axis=2) + 1)
 
   for row in range(num_grid):
     for col in range(num_grid):
@@ -432,11 +439,25 @@ def calculate_loss(y, out):
   yClass, yBBs = tf.split(value=y, num_or_size_splits=[FLAGS.nclass, bbboxs_dim], axis=3)
   obj, _ = tf.split(value=yBBs, num_or_size_splits=[1, bbboxs_dim - 1], axis=3)
   yBBs = tf.split(value=yBBs, num_or_size_splits=[5]*FLAGS.B, axis=3)
+  print("yClass")
+  print(yClass)
+  print("yBBs[0]")
+  print(yBBs[0])
+  print("yBBs[1]")
+  print(yBBs[1])
 
   # devide output into each boundbox infos and class info
+  print("out")
+  print(out)
   Class, BBs = tf.split(value=out, num_or_size_splits=[FLAGS.nclass, bbboxs_dim], axis=3)
   Class = tf.nn.softmax(Class)
   BBs = tf.split(value=BBs, num_or_size_splits=[5]*FLAGS.B, axis=3)
+  print("Class")
+  print(Class)
+  print("BBs[0]")
+  print(BBs[0])
+  print("BBs[1]")
+  print(BBs[1])
 
   # calculate boundbox infos
   lambda_coord = 5
@@ -448,39 +469,61 @@ def calculate_loss(y, out):
   for i in range(FLAGS.B):
     yC, yXY, yWH = tf.split(value=yBBs[i], num_or_size_splits=[1, 2, 2], axis=3)
 
+    yC = tf.Print(yC, [yC, tf.shape(yC)[1:]], message="yC{}:".format(i))
+    yXY = tf.Print(yXY, [yXY, tf.shape(yXY)[1:]], message="yXY{}:".format(i))
+    yWH = tf.Print(yWH, [yWH, tf.shape(yWH)[1:]], message="yWH{}:".format(i))
+
     C, XY, WH  = tf.split(value=BBs[i], num_or_size_splits=[1, 2, 2], axis=3)
+
+    XY = tf.Print(XY, [XY, tf.shape(XY)[1:]], message="XY{}a:".format(i))
+    WH = tf.Print(WH, [WH, tf.shape(WH)[1:]], message="WH{}a:".format(i))
+
     C = tf.nn.sigmoid(C)
-    XY = tf.nn.tanh(XY)
+    XY = 0.5*tf.nn.tanh(XY)
     WH = tf.clip_by_value(tf.nn.sigmoid(WH), 1e-6, 1.0)
+
+    C = tf.Print(C, [C, tf.shape(C)[1:]], message="C{}:".format(i))
+    XY = tf.Print(XY, [XY, tf.shape(XY)[1:]], message="XY{}b:".format(i))
+    WH = tf.Print(WH, [WH, tf.shape(WH)[1:]], message="WH{}b:".format(i))
 
     Cdiff = tf.square(yC - C)
 
-    coord_term += lambda_coord*tf.reduce_sum(yC*tf.square(yXY - XY))
-    coord_term += lambda_coord*tf.reduce_sum(yC*tf.square(tf.sqrt(yWH) -tf.sqrt(WH)))
-    coord_term += tf.reduce_sum(yC*Cdiff)
-    coord_term += lambda_noobj*tf.reduce_sum((1 - yC)*Cdiff)
+    t0 = lambda_coord*tf.reduce_sum(yC*tf.square(yXY - XY))
+    t0 = tf.Print(t0, [t0, tf.shape(t0)[1:]], message="[{}] t0:".format(i))
+    t1 = lambda_coord*tf.reduce_sum(yC*tf.square(tf.sqrt(yWH) -tf.sqrt(WH)))
+    t1 = tf.Print(t1, [t1, tf.shape(t1)[1:]], message="[{}] t1:".format(i))
+    t2 = tf.reduce_sum(yC*Cdiff)
+    t2 = tf.Print(t2, [t2, tf.shape(t2)[1:]], message="[{}] t2".format(i))
+    t3 = lambda_noobj*tf.reduce_sum((1 - yC)*Cdiff)
+    t3 = tf.Print(t3, [t3, tf.shape(t3)[1:]], message="[{}] t3:".format(i))
 
+    coord_term += t0 + t1 + t2 + t3
+    #coord_term += tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=C, labels=yC))
     out_post = tf.concat([out_post, C, XY, WH], axis=3)
 
-  # calculate boundbox infos
   noobj = 1 - obj
-  class_term = tf.reduce_sum(obj * tf.square(yClass - Class))
+  test = tf.squeeze(noobj[0])
+  # calculate boundbox infos
+  sqrd_cls_err = tf.square(yClass - Class)
+  #class_term = tf.reduce_sum(obj*sqrd_cls_err + lambda_noobj*noobj*sqrd_cls_err)
+  class_term = tf.reduce_sum(obj*sqrd_cls_err)
+
+  coord_term = tf.Print(coord_term, [coord_term, tf.shape(coord_term)[1:]], message="coord_term:")
+  class_term = tf.Print(class_term, [class_term, tf.shape(class_term)[1:]], message="class_term:")
 
   loss = coord_term + class_term
+  #loss = class_term
+  #loss = coord_term
 
-  #return loss, out_post
-  return loss, out_post
+  #loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=Class, labels=yClass))
+  return loss, out_post, test
 
 def evaluate(sess, filelist, x, y, out, accuracy):
   size = len(filelist)
   itr_size = size//FLAGS.batch_size
   total_accuracy_val = 0
   for itr in range(0, itr_size):
-    print("===================================================================")
-    print("[{}] {}/{}".format(epoch, itr, datacenter.size))
-
     # build minibatch
-    #batch_size = min(FLAGS.batch_size, datacenter.size - itr)
     _batch = filelist[itr:itr + FLAGS.batch_size]
 
     feed_imgs = load_imgs(_batch)
@@ -541,7 +584,7 @@ def main(args):
   print("2. model setup is done.")
 
   out = tf.transpose(_out, perm=[0, 2, 3, 1])
-  loss, out_post = calculate_loss(y, out)
+  loss, out_post, test = calculate_loss(y, out)
   print("3. loss setup is done.")
   opt = get_opt(loss, "YOLO")
   print("4. optimizer setup is done.")
@@ -596,6 +639,8 @@ def main(args):
 
         _, loss_val = sess.run([opt, loss], feed_dict=feed_dict)
 
+        #print("test: {}".format(sess.run(test, feed_dict=feed_dict)))
+        #print("loss: {}".format(loss_val))
         current = datetime.now()
         print('\telapsed:' + str(current - start))
 
