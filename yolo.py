@@ -349,7 +349,7 @@ def conv_relu(tensor, W, B, name, reuse):
 
   return relued
 
-def model_YOLO(x, WEs, BEs, WFCs, BFCs, drop_prob = 0.5, reuse=False):
+def model_YOLO(x, WEs, BEs, WFCs, BFCs, drop_prob, reuse=False):
 
   mp_ksize= [1, 1, 2, 2]
   mp_strides=[1, 1, 2, 2]
@@ -492,12 +492,12 @@ def main(args):
 
   colormap, palette = common.build_colormap_lookup(21)
   cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4) # 2x(confidence + (x, y, w, h)) + class
-  datacenter = common.VOC2012()
 
   #pool = mp.Pool(processes=6)
 
+  drop_prob = tf.placeholder(tf.float32)
   _x = tf.placeholder(tf.float32, [None, FLAGS.img_orig_size, FLAGS.img_orig_size, FLAGS.channel])
-  _y = tf.placeholder(tf.float32, [None, FLAGS.num_grid, FLAGS.num_grid, cell_info_dim])
+  _y = tf.placeholder(tf.float32, [FLAGS.batch_size, FLAGS.num_grid, FLAGS.num_grid, cell_info_dim])
   _st = tf.placeholder(tf.float32, [None, 4])
   if not os.path.exists(FLAGS.save_dir):
     os.makedirs(FLAGS.save_dir)
@@ -533,7 +533,7 @@ def main(args):
   print("1. variable setup is done.")
 
   _out = vgg_16.model_VGG16(x, Ws, Bs)
-  _out = model_YOLO(_out, WEs, BEs, WFCs, BFCs)
+  _out = model_YOLO(_out, WEs, BEs, WFCs, BFCs, drop_prob=drop_prob)
   print("2. model setup is done.")
 
   out = tf.transpose(_out, perm=[0, 2, 3, 1])
@@ -588,11 +588,10 @@ def main(args):
 
         feed_scaletrans, feed_annots = build_feed_annots(_feed_annots)
 
-        feed_dict = {_x: feed_imgs, _y: feed_annots, _st: feed_scaletrans}
+        feed_dict = {_x: feed_imgs, _y: feed_annots, _st: feed_scaletrans, drop_prob:0.5}
 
-        _ = sess.run([opt], feed_dict=feed_dict)
+        _, loss_val = sess.run([opt, loss], feed_dict=feed_dict)
 
-        print("loss: {}".format(sess.run(loss, feed_dict=feed_dict)))
         current = datetime.now()
         print('\telapsed:' + str(current - start))
 
