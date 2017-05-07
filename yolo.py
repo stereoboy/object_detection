@@ -159,6 +159,7 @@ def build_feed_annots(_feed_annots):
   offsets = (1 - scales)*np.random.uniform(0.0, 1.0, [batch_size, 2])
   ends = offsets + scales
   feed_scaletrans = np.concatenate([offsets, ends], axis=1)
+  feed_flips = np.random.randint(0, 2, [batch_size])
 
   # build augmented annotations
   for i, _annot in enumerate(_feed_annots):
@@ -189,6 +190,13 @@ def build_feed_annots(_feed_annots):
       y1 = max(0.0, y1)
       y2 = min(h, y2)
 
+      if feed_flips[i]:
+        x1 = w - x1
+        x2 = w - x2
+        tmp = x1
+        x1 = x2
+        x2 = tmp
+
       idx = int(idx)
       (x_loc, y_loc), (cx, cy, nw, nh) = common.cal_rel_coord(w, h, x1, x2, y1, y2, w_grid, h_grid)
 
@@ -209,7 +217,7 @@ def build_feed_annots(_feed_annots):
         feed_annots[i, y_loc, x_loc, b:e] = np.array(bbs[bbi], np.float32)
 
   # annot
-  return feed_scaletrans, feed_annots
+  return feed_scaletrans, feed_flips, feed_annots
 
 def augment_brightness_saturation(image):
 
@@ -222,7 +230,7 @@ def augment_gaussian_noise(images, std=0.2):
   noise = tf.random_normal(shape=tf.shape(images), mean=0.0, stddev=std, dtype=tf.float32)
   return images + noise
 
-def augment_scale_translate(images, boxes, scale_range=0.2):
+def augment_scale_translate_flip(images, boxes, flip, scale_range=0.2):
 
   #batch_size = images.get_shape()[0]
   batch_size = FLAGS.batch_size # this value should be fixed up
@@ -230,10 +238,8 @@ def augment_scale_translate(images, boxes, scale_range=0.2):
   # Translation
   scale = 1.0 + tf.random_uniform([1], minval=0.0, maxval=scale_range)
   size = tf.constant([FLAGS.img_size, FLAGS.img_size])
-  print(scale)
   new_size = scale*tf.cast(size, dtype=tf.float32)
 
-  print("images:", images)
   box_ind = tf.range(start=0, limit=batch_size, dtype=tf.int32)
 
   images = tf.image.crop_and_resize(
@@ -243,7 +249,13 @@ def augment_scale_translate(images, boxes, scale_range=0.2):
       crop_size=size
       )
 
-  print("images:", images)
+  idxs = tf.range(0, batch_size, dtype=tf.int32)
+  def flip_left_right(i):
+    image = images[i]
+    flip_or_not = flip[i]
+    return tf.cond(flip_or_not, lambda: tf.reverse(image, axis=[1]), lambda: image)
+
+  images = tf.map_fn(lambda idx:flip_left_right(idx), idxs, dtype=tf.float32)
   return images
 
 #def random_crop(value, size, seed=None, name=None):
@@ -529,7 +541,7 @@ def evaluate(sess, filelist, x, y, out, accuracy):
     feed_imgs = load_imgs(_batch)
     _feed_annots = load_annots(_batch)
 
-    feed_scaletrans, feed_annots = build_feed_annots(_feed_annots)
+    feed_scaletrans, feed_flips, feed_annots = build_feed_annots(_feed_annots)
     accuracy_val = sess.run(accuracy, feed_dict=feed_dict)
     total_accuracy_val += accuracy_val
 
@@ -546,6 +558,8 @@ def main(args):
   _x = tf.placeholder(tf.float32, [None, FLAGS.img_orig_size, FLAGS.img_orig_size, FLAGS.channel])
   _y = tf.placeholder(tf.float32, [FLAGS.batch_size, FLAGS.num_grid, FLAGS.num_grid, cell_info_dim])
   _st = tf.placeholder(tf.float32, [None, 4])
+  _flip = tf.placeholder(tf.bool, [None])
+
   if not os.path.exists(FLAGS.save_dir):
     os.makedirs(FLAGS.save_dir)
 
@@ -560,7 +574,7 @@ def main(args):
   mean = tf.constant(np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32))
 
 
-  aug = augment_scale_translate(_x, _st)
+  aug = augment_scale_translate_flip(_x, _st, _flip)
   aug = tf.map_fn(lambda x:augment_brightness_saturation(x), aug)
   x = tf.cast(aug, dtype=tf.float32) - mean
   x = augment_gaussian_noise(x)
@@ -633,9 +647,9 @@ def main(args):
         feed_imgs = load_imgs(_batch)
         _feed_annots = load_annots(_batch)
 
-        feed_scaletrans, feed_annots = build_feed_annots(_feed_annots)
+        feed_scaletrans, feed_flips, feed_annots = build_feed_annots(_feed_annots)
 
-        feed_dict = {_x: feed_imgs, _y: feed_annots, _st: feed_scaletrans, drop_prob:0.5}
+        feed_dict = {_x: feed_imgs, _y: feed_annots, _st: feed_scaletrans, _flip: feed_flips, drop_prob:0.5}
 
         _, loss_val = sess.run([opt, loss], feed_dict=feed_dict)
 
@@ -663,9 +677,7 @@ def main(args):
 
           compare(feed_annots[0], out_val[0])
 
-          key = cv2.waitKey(10)
-
-        key = cv2.waitKey(10)
+        key = cv2.waitKey(5)
         if key == 27:
           sys.exit()
       print("#######################################################")
