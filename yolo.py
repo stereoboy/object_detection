@@ -578,13 +578,13 @@ def main(args):
     for epoch in range(FLAGS.max_epoch):
       print("#####################################################################")
       print("1:")
-      #random.shuffle(filelist)
+      random.shuffle(filelist)
+      max_itr = len(filelist)//FLAGS.batch_size
       for itr in range(0, len(filelist)//FLAGS.batch_size):
         print("===================================================================")
-        print("[{}] {}/{}".format(epoch, itr, datacenter.size))
+        print("[{}] {}/{}".format(epoch, itr, max_itr))
 
         # build minibatch
-        #batch_size = min(FLAGS.batch_size, datacenter.size - itr)
         _batch = filelist[itr:itr + FLAGS.batch_size]
 
         feed_imgs = load_imgs(_batch)
@@ -623,11 +623,8 @@ def main(args):
         key = cv2.waitKey(10)
         if key == 27:
           sys.exit()
-        if itr > 1 and itr % 500 == 0:
-          #energy_d_val, loss_d_val, loss_g_val = sess.run([energy_d, loss_d, loss_g])
-          print("#######################################################")
-          #print "\tE=", energy_d_val, "Ld(x, z)=", loss_d, "Lg(z)=", loss_g
-          saver.save(sess, checkpoint)
+      print("#######################################################")
+      saver.save(sess, checkpoint)
 
 
     cv2.destroyAllWindows()
