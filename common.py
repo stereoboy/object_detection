@@ -185,9 +185,9 @@ def cal_rel_coord(w, h, x1, x2, y1, y2, w_grid, h_grid):
   nw, nh = ((x2 - x1)/w, (y2 - y1)/h)
 
   x_loc = cx//w_grid
-  cx = (cx - x_loc*w_grid)/w_grid - 0.5
+  cx = (cx - x_loc*w_grid)/w_grid
   y_loc = cy//h_grid
-  cy = (cy - y_loc*h_grid)/h_grid - 0.5
+  cy = (cy - y_loc*h_grid)/h_grid
 
   return (int(x_loc),int( y_loc)), (cx, cy, nw, nh)
 

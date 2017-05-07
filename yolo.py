@@ -78,8 +78,8 @@ def visualization2(img, annot, palette, out=False):
         if c > FLAGS.confidence:
           (y_loc, x_loc) = (row, col)
 
-          cx = grid_size*(x_loc + cx + 0.5)
-          cy = grid_size*(y_loc + cy + 0.5)
+          cx = grid_size*(x_loc + cx)
+          cy = grid_size*(y_loc + cy)
           bw = FLAGS.img_size*nw
           bh = FLAGS.img_size*nh
 
@@ -491,7 +491,7 @@ def calculate_loss(y, out):
     WH = tf.Print(WH, [WH, tf.shape(WH)[1:]], message="WH{}a:".format(i))
 
     C = tf.nn.sigmoid(C)
-    XY = 0.5*tf.nn.tanh(XY)
+    XY = tf.nn.sigmoid(XY)
     WH = tf.clip_by_value(tf.nn.sigmoid(WH), 1e-6, 1.0)
 
     C = tf.Print(C, [C, tf.shape(C)[1:]], message="C{}:".format(i))
