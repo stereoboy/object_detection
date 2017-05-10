@@ -22,8 +22,8 @@ tf.flags.DEFINE_integer("batch_size", "32", "batch size for training")
 tf.flags.DEFINE_integer("B", "2", "number of Bound Box in grid cell")
 tf.flags.DEFINE_integer("num_grid", "7", "number of grids vertically, horizontally")
 tf.flags.DEFINE_integer("nclass", "20", "class num")
-tf.flags.DEFINE_float("confidence", "0.5", "confidence limit")
-tf.flags.DEFINE_float("learning_rate", "1e-3", "Learning rate for Adam Optimizer")
+tf.flags.DEFINE_float("confidence", "0.3", "confidence limit")
+tf.flags.DEFINE_float("learning_rate", "1e-5", "Learning rate for Adam Optimizer")
 tf.flags.DEFINE_float("momentum", "0.9", "momentum for Momentum Optimizer")
 tf.flags.DEFINE_float("eps", "1e-5", "epsilon for various operation")
 tf.flags.DEFINE_float("beta1", "0.5", "beta1 for Adam optimizer")
@@ -92,11 +92,11 @@ def visualization2(img, annot, palette, out=False):
           b = (int(cx - 0.5*bw), int(cy - 0.5*bh))
           e = (int(cx + 0.5*bw), int(cy + 0.5*bh))
 
-          print(b, e)
+          #print(b, e)
 
           vis_grid= cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
-          img = cv2.rectangle(img, b, e, color, 5)
-          img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
+          img = cv2.rectangle(img, b, e, color, 7)
+          img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
           img = cv2.circle(img, (int(cx), int(cy)), 4, color, -1)
           #img = cv2.circle(img, (int(cx), int(cy)), 4, (255,255,255), -1)
 
@@ -108,7 +108,12 @@ def compare(annot, out_annot):
   grid_size = FLAGS.img_size/num_grid
 
   print(out_annot[:, :, FLAGS.nclass])
-  print(np.argmax(out_annot[:, :, :FLAGS.nclass], axis=2) + 1)
+  pred_class = np.argmax(out_annot[:, :, :FLAGS.nclass], axis=2) + 1
+  for i in range(num_grid):
+    pred_name = []
+    for j in range(num_grid):
+      pred_name.append(common.idx2obj[pred_class[i, j]])
+    print(pred_name)
 
   for row in range(num_grid):
     for col in range(num_grid):
@@ -121,12 +126,17 @@ def compare(annot, out_annot):
         c, cx, cy, nw, nh = annot[row, col, b:e]
 
         if c > FLAGS.confidence:
-          out_idx = int(1 + np.argmax(out_annot[row, col, :FLAGS.nclass]))
-          out_name = common.idx2obj[out_idx]
+          #out_idx = int(1 + np.argmax(out_annot[row, col, :FLAGS.nclass]))
+          out_idx = (np.argsort(out_annot[row, col, :FLAGS.nclass])[-5:][::-1] + 1)
+          #out_name = common.idx2obj[out_idx]
+          out_name = [ common.idx2obj[i] for i in out_idx]
+          out_name_check = (out_idx == idx)
           out_c, out_cx, out_cy, out_nw, out_nh = out_annot[row, col, b:e]
 
           print("at ({}, {})".format(row, col))
           print("class: {} vs {}".format(name, out_name))
+          print("class: {} vs {}".format(name, out_name_check))
+          print("class: {} vs {}".format(name, np.sort(out_annot[row, col, :FLAGS.nclass])[-5:][::-1]))
           print("confidence:{} vs {}".format(c, out_c))
           print("x, y: ({}, {}) vs ({}, {})".format(cx, cy, out_cx, out_cy))
           print("w, h: {}x{} vs {}x{}".format(nw, nh, out_nw, out_nh))
@@ -332,13 +342,15 @@ def init_YOLOBE():
       }
 
   WFCs = {
-      "1":tf.get_variable('fc_1', shape = [FLAGS.num_grid*FLAGS.num_grid*1024, 4096], initializer=init_with_normal()),
-      "2":tf.get_variable('fc_2', shape = [4096, FLAGS.num_grid*FLAGS.num_grid*(FLAGS.nclass + 5*FLAGS.B)], initializer=init_with_normal()),
+      "1":tf.get_variable('fc_1', shape = [FLAGS.num_grid*FLAGS.num_grid*1024, 512], initializer=init_with_normal()),
+      "2":tf.get_variable('fc_2', shape = [512, 4096], initializer=init_with_normal()),
+      "3":tf.get_variable('fc_3', shape = [4096, FLAGS.num_grid*FLAGS.num_grid*(FLAGS.nclass + 5*FLAGS.B)], initializer=init_with_normal()),
       }
 
   BFCs = {
-      "1":tf.get_variable('fcb_1', shape = [4096], initializer=tf.zeros_initializer()),
-      "2":tf.get_variable('fcb_2', shape = [FLAGS.num_grid*FLAGS.num_grid*(FLAGS.nclass + 5*FLAGS.B)], initializer=tf.zeros_initializer()),
+      "1":tf.get_variable('fcb_1', shape = [512], initializer=tf.zeros_initializer()),
+      "2":tf.get_variable('fcb_2', shape = [4096], initializer=tf.zeros_initializer()),
+      "3":tf.get_variable('fcb_3', shape = [FLAGS.num_grid*FLAGS.num_grid*(FLAGS.nclass + 5*FLAGS.B)], initializer=tf.zeros_initializer()),
       }
 
   return WEs, BEs, WFCs, BFCs,
@@ -363,8 +375,9 @@ def conv_relu(tensor, W, B, name, reuse):
 
 #  mean, var = tf.nn.moments(biased, [0, 2, 3], keep_dims=True)
 #  normalized = tf.nn.batch_normalization(biased, mean, var, 0, 1, 0.0001)
-  normalized = batch_norm_layer(biased, "bne" + name, reuse)
-  relued = leaky_relu(normalized)
+#  normalized = batch_norm_layer(biased, "bne" + name, reuse)
+#  relued = leaky_relu(normalized)
+  relued = leaky_relu(biased)
 
   return relued
 
@@ -399,11 +412,14 @@ def model_YOLO(x, WEs, BEs, WFCs, BFCs, drop_prob, reuse=False):
   fc = tf.reshape(relued, shape=[-1, 7*7*1024])
 
   fc = tf.nn.bias_add(tf.matmul(fc, WFCs['1']), BFCs['1'])
-
   relued = leaky_relu(fc)
+
+  fc = tf.nn.bias_add(tf.matmul(fc, WFCs['2']), BFCs['2'])
+  relued = leaky_relu(fc)
+
   dropouted = tf.nn.dropout(relued, drop_prob)
 
-  fc = tf.nn.bias_add(tf.matmul(dropouted, WFCs['2']), BFCs['2'])
+  fc = tf.nn.bias_add(tf.matmul(dropouted, WFCs['3']), BFCs['3'])
 
   final = tf.reshape(fc, shape=[-1, (FLAGS.nclass + 5*FLAGS.B), 7, 7])
 
@@ -433,13 +449,25 @@ def get_opt(loss, scope):
   # Use simple momentum for the optimization.
 
   learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
-                                                 1, 0.0005, staircase=True)
+                                                 1, 1.0, staircase=True)
+  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+  lr_decay_op1 = 0 # learning_rate.assign(1e-3)
+  lr_decay_op2 = 0 #learning_rate.assign(1e-4)
   optimizer = tf.train.MomentumOptimizer(learning_rate,
                                          FLAGS.momentum).minimize(loss,
                                                        var_list=var_list,
                                                        global_step=global_step)
+#
+#  learning_rate = tf.Variable(
+#      float(1e-3), trainable=False, dtype=tf.float32)
+#  lr_decay_op1 = learning_rate.assign(1e-3)
+#  lr_decay_op2 = learning_rate.assign(1e-4)
+#  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+#  optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss,
+#                                                                var_list=var_list,
+#                                                                global_step=global_step)
 
-  return optimizer
+  return optimizer, lr_decay_op1, lr_decay_op2
 #  return tf.train.AdamOptimizer(0.0001).minimize(loss)
 #  optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate, beta1=FLAGS.beta1)
 #  grads = optimizer.compute_gradients(loss, var_list=var_list)
@@ -462,7 +490,7 @@ def calculate_loss(y, out):
   print("out")
   print(out)
   Class, BBs = tf.split(value=out, num_or_size_splits=[FLAGS.nclass, bbboxs_dim], axis=3)
-  Class = tf.nn.softmax(Class)
+  #Class = tf.nn.softmax(Class)
   BBs = tf.split(value=BBs, num_or_size_splits=[5]*FLAGS.B, axis=3)
   print("Class")
   print(Class)
@@ -481,52 +509,82 @@ def calculate_loss(y, out):
   for i in range(FLAGS.B):
     yC, yXY, yWH = tf.split(value=yBBs[i], num_or_size_splits=[1, 2, 2], axis=3)
 
-    yC = tf.Print(yC, [yC, tf.shape(yC)[1:]], message="yC{}:".format(i))
-    yXY = tf.Print(yXY, [yXY, tf.shape(yXY)[1:]], message="yXY{}:".format(i))
-    yWH = tf.Print(yWH, [yWH, tf.shape(yWH)[1:]], message="yWH{}:".format(i))
+    yArea = yWH[:,:,:,0]*yWH[:,:,:,1]
+    yTopLeft = yXY - 0.5*yWH
+    yBotRight = yXY + 0.5*yWH
 
-    C, XY, WH  = tf.split(value=BBs[i], num_or_size_splits=[1, 2, 2], axis=3)
+#    yC = tf.Print(yC, [yC, tf.shape(yC)[1:]], summarize=49, message="yC{}:".format(i))
+#    yXY = tf.Print(yXY, [yXY, tf.shape(yXY)[1:]], summarize=49, message="yXY{}:".format(i))
+#    yWH = tf.Print(yWH, [yWH, tf.shape(yWH)[1:]], summarize=49, message="yWH{}:".format(i))
 
-    XY = tf.Print(XY, [XY, tf.shape(XY)[1:]], message="XY{}a:".format(i))
-    WH = tf.Print(WH, [WH, tf.shape(WH)[1:]], message="WH{}a:".format(i))
+    C, XY, sqrtWH  = tf.split(value=BBs[i], num_or_size_splits=[1, 2, 2], axis=3)
+    WH = tf.square(sqrtWH)
+   
+    Area = WH[:,:,:,0]*WH[:,:,:,1]
+    TopLeft = XY - 0.5*WH
+    BotRight = XY + 0.5*WH
 
-    C = tf.nn.sigmoid(C)
-    XY = tf.nn.sigmoid(XY)
-    WH = tf.clip_by_value(tf.nn.sigmoid(WH), 1e-6, 1.0)
+    interTopLeft = tf.maximum(yTopLeft, TopLeft)
+    interBotRight = tf.minimum(yBotRight, BotRight)
+    interWH = interBotRight - interTopLeft
+    interWH = tf.maximum(interWH, 0.0)
+    iArea = interWH[:,:,:,0]*interWH[:,:,:,1]
 
-    C = tf.Print(C, [C, tf.shape(C)[1:]], message="C{}:".format(i))
-    XY = tf.Print(XY, [XY, tf.shape(XY)[1:]], message="XY{}b:".format(i))
-    WH = tf.Print(WH, [WH, tf.shape(WH)[1:]], message="WH{}b:".format(i))
+    uArea = tf.clip_by_value(yArea + Area - iArea, 1e-9, 1.0)
+    iou = tf.expand_dims(iArea/uArea, axis=3)
+    iou = tf.Print(iou, [iou, tf.shape(iou)[1:]], summarize=49, message="iou{}:".format(i))
+#    XY = tf.Print(XY, [XY, tf.shape(XY)[1:]], summarize=49, message="XY{}a:".format(i))
 
-    Cdiff = tf.square(yC - C)
+#    XY = tf.Print(XY, [XY, tf.shape(XY)[1:]], summarize=49, message="XY{}a:".format(i))
+#    WH = tf.Print(WH, [WH, tf.shape(WH)[1:]], summarize=49, message="WH{}a:".format(i))
 
-    t0 = lambda_coord*tf.reduce_sum(yC*tf.square(yXY - XY))
-    t0 = tf.Print(t0, [t0, tf.shape(t0)[1:]], message="[{}] t0:".format(i))
-    t1 = lambda_coord*tf.reduce_sum(yC*tf.square(tf.sqrt(yWH) -tf.sqrt(WH)))
-    t1 = tf.Print(t1, [t1, tf.shape(t1)[1:]], message="[{}] t1:".format(i))
-    t2 = tf.reduce_sum(yC*Cdiff)
-    t2 = tf.Print(t2, [t2, tf.shape(t2)[1:]], message="[{}] t2".format(i))
-    t3 = lambda_noobj*tf.reduce_sum((1 - yC)*Cdiff)
-    t3 = tf.Print(t3, [t3, tf.shape(t3)[1:]], message="[{}] t3:".format(i))
+    #C = tf.nn.sigmoid(C)
+    #XY = tf.nn.sigmoid(XY)
+    #WH = tf.clip_by_value(tf.nn.sigmoid(WH), 1e-6, 1.0)
+
+#    C = tf.Print(C, [C, tf.shape(C)[1:]], summarize=49, message="C{}:".format(i))
+#    XY = tf.Print(XY, [XY, tf.shape(XY)[1:]], summarize=49, message="XY{}b:".format(i))
+#    WH = tf.Print(WH, [WH, tf.shape(WH)[1:]], summarize=49, message="WH{}b:".format(i))
+
+    Cdiff = tf.square(yC - iou*C)
+
+    t0 = lambda_coord*tf.reduce_sum(yC*tf.square(yXY - XY), axis=[1,2,3])
+#    t0 = tf.Print(t0, [t0, tf.shape(t0)[1:]], summarize=49, message="[{}] t0:".format(i))
+    
+    t1 = lambda_coord*tf.reduce_sum(yC*tf.square(tf.sqrt(yWH) - sqrtWH), axis=[1,2,3])
+#    t1 = tf.Print(t1, [t1, tf.shape(t1)[1:]], summarize=49, message="[{}] t1:".format(i))
+    
+    t2 = tf.reduce_sum(yC*Cdiff, axis=[1,2,3])
+#    t2 = tf.Print(t2, [t2, tf.shape(t2)[1:]], summarize=49, message="[{}] t2".format(i))
+    
+    t3 = lambda_noobj*tf.reduce_sum((1 - yC)*Cdiff, axis=[1,2,3])
+#    t3 = tf.Print(t3, [t3, tf.shape(t3)[1:]], summarize=49, message="[{}] t3:".format(i))
 
     coord_term += t0 + t1 + t2 + t3
     #coord_term += tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=C, labels=yC))
+
     out_post = tf.concat([out_post, C, XY, WH], axis=3)
 
   noobj = 1 - obj
   test = tf.squeeze(noobj[0])
   # calculate boundbox infos
+#  Class = tf.Print(Class, [Class, tf.shape(Class)[1:]], summarize=600, message="Class:")
   sqrd_cls_err = tf.square(yClass - Class)
   #class_term = tf.reduce_sum(obj*sqrd_cls_err + lambda_noobj*noobj*sqrd_cls_err)
-  class_term = tf.reduce_sum(obj*sqrd_cls_err)
+#  obj = tf.Print(obj, [obj, tf.shape(obj)[1:]], summarize=600, message="obj:")
+#  sqrd_cls_err = tf.Print(sqrd_cls_err, [sqrd_cls_err, tf.shape(sqrd_cls_err)[1:]], summarize=600, message="sqrd_cls_err:")
+  class_term = obj*sqrd_cls_err
+#  class_term = tf.Print(class_term, [class_term, tf.shape(class_term)[1:]], summarize=600, message="class_term:")
+  class_term = tf.reduce_sum(class_term, axis=[1, 2, 3])
 
-  coord_term = tf.Print(coord_term, [coord_term, tf.shape(coord_term)[1:]], message="coord_term:")
-  class_term = tf.Print(class_term, [class_term, tf.shape(class_term)[1:]], message="class_term:")
+#  coord_term = tf.Print(coord_term, [coord_term, tf.shape(coord_term)], summarize=600, message="coord_term:")
+#  class_term = tf.Print(class_term, [class_term, tf.shape(class_term)], summarize=600, message="class_term:")
 
   loss = coord_term + class_term
   #loss = class_term
   #loss = coord_term
 
+  loss = tf.reduce_mean(loss)
   #loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=Class, labels=yClass))
   return loss, out_post, test
 
@@ -600,7 +658,7 @@ def main(args):
   out = tf.transpose(_out, perm=[0, 2, 3, 1])
   loss, out_post, test = calculate_loss(y, out)
   print("3. loss setup is done.")
-  opt = get_opt(loss, "YOLO")
+  opt, lr_decay_op1, lr_decay_op2 = get_opt(loss, "YOLO")
   print("4. optimizer setup is done.")
 
   init_op = tf.group(tf.global_variables_initializer(),
@@ -651,15 +709,15 @@ def main(args):
 
         feed_dict = {_x: feed_imgs, _y: feed_annots, _st: feed_scaletrans, _flip: feed_flips, drop_prob:0.5}
 
-        _, loss_val = sess.run([opt, loss], feed_dict=feed_dict)
+        _, loss_val, out_val = sess.run([opt, loss, out_post], feed_dict=feed_dict)
 
         #print("test: {}".format(sess.run(test, feed_dict=feed_dict)))
-        #print("loss: {}".format(loss_val))
+        print("loss: {}".format(loss_val))
         current = datetime.now()
         print('\telapsed:' + str(current - start))
 
-        if itr % 5 == 0:
-          data_val, aug_val, label_val, out_val = sess.run([_x, aug, _y, out_post], feed_dict=feed_dict)
+        if itr % 1 == 0:
+          data_val, aug_val, label_val,  = sess.run([_x, aug, _y], feed_dict=feed_dict)
           orig_img = cv2.cvtColor(data_val[0],cv2.COLOR_RGB2BGR)
           # crop region
           cr = feed_scaletrans[0]*FLAGS.img_orig_size
