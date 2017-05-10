@@ -31,7 +31,7 @@ tf.flags.DEFINE_float("pt_w", "0.1", "weight of pull-away term")
 tf.flags.DEFINE_float("margin", "20", "Margin to converge to for discriminator")
 tf.flags.DEFINE_string("noise_type", "uniform", "noise type for z vectors")
 tf.flags.DEFINE_integer("channel", "3", "batch size for training")
-tf.flags.DEFINE_integer("img_orig_size", "537", "sample image size")
+tf.flags.DEFINE_integer("img_orig_size", "646", "sample image size")
 tf.flags.DEFINE_integer("img_size", "448", "sample image size")
 tf.flags.DEFINE_integer("num_threads", "6", "max thread number")
 tf.flags.DEFINE_string("filelist", "filelist.json", "filelist.json")
@@ -165,7 +165,7 @@ def build_feed_annots(_feed_annots):
   # input image is resized 537x537
   # we will choose random crop size and offset, and resize into 428x428
   # This is equivalent to resize ~20% and crop with the widnow of 428x428
-  scales = np.random.uniform(0.83, 1.0, [batch_size, 1])
+  scales = np.random.uniform(0.70, 1.0, [batch_size, 1])
   offsets = (1 - scales)*np.random.uniform(0.0, 1.0, [batch_size, 2])
   ends = offsets + scales
   feed_scaletrans = np.concatenate([offsets, ends], axis=1)

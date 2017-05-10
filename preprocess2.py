@@ -19,6 +19,10 @@ tf.flags.DEFINE_integer("B", "2", "number of Bound Box in grid cell")
 tf.flags.DEFINE_integer("num_grid", "7", "number of grids vertically, horizontally")
 tf.flags.DEFINE_integer("nclass", "20", "class num")
 tf.flags.DEFINE_integer("img_size", "448", "sample image size")
+# resize 538x538 (538=448*1.2)
+tf.flags.DEFINE_integer("resize_size", "538", "size for augmentation")
+tf.flags.DEFINE_integer("final_size", "646", "final image size")
+tf.flags.DEFINE_float("resize_factor", "1.2", "sample image size")
 tf.flags.DEFINE_string("filelist", "filelist.json", "filelist.json")
 tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base directory for data")
 tf.flags.DEFINE_string("train_img_dir", "./train_img", "base directory for data")
@@ -30,7 +34,6 @@ def main(args):
     os.mkdir(FLAGS.train_img_dir)
   if not os.path.exists(FLAGS.train_annot_dir):
     os.mkdir(FLAGS.train_annot_dir)
-
 
   obj2idx = common.build_obj2idx(common.idx2obj)
   colormap, palette = common.build_colormap_lookup(21)
@@ -51,13 +54,16 @@ def main(args):
 
   max_object = -1
   annot_list = []
-  for filename in tqdm(filelist, desc="537x537 resize build annotation..."):
+  for filename in tqdm(filelist, desc="538x538 resize build annotation..."):
 
-    # resize 537x537 (537=448*1.2)
+    # resize 538x538 (538=448*1.2)
     jpg_file = os.path.join(img_path, filename + '.jpg')
     img = cv2.imread(jpg_file)
-    resized_img = cv2.resize(img, (537, 537))
-    cv2.imwrite(os.path.join(FLAGS.train_img_dir, filename + '.png'), resized_img)
+    resized_img = cv2.resize(img, (FLAGS.resize_size, FLAGS.resize_size))
+    margin = (FLAGS.final_size - FLAGS.resize_size)//2
+    #final_img = cv2.copyMakeBorder(resized_img, margin, margin, margin, margin, cv2.BORDER_REFLECT_101)
+    final_img = cv2.copyMakeBorder(resized_img, margin, margin, margin, margin, cv2.BORDER_CONSTANT)
+    cv2.imwrite(os.path.join(FLAGS.train_img_dir, filename + '.png'), final_img)
 
     # build annotation
     xml_file = os.path.join(annot_path, filename + '.xml')
@@ -79,20 +85,22 @@ def main(args):
         max_object = len(annots)
 
       annot_data = np.zeros((len(annots) + 1, 5), np.float32)
-      
+
       # build header
-      annot_data[0, 0] = w
-      annot_data[0, 1] = h
+      annot_data[0, 0] = FLAGS.resize_factor*w
+      annot_data[0, 1] = FLAGS.resize_factor*h
       for i, annot in enumerate(annots):
         x1, y1 = (int(annot['bndbox']['xmin']), int(annot['bndbox']['ymin']))
         x2, y2 = (int(annot['bndbox']['xmax']), int(annot['bndbox']['ymax']))
         idx = obj2idx[annot['name']]
 
+        offset_x = w*(FLAGS.resize_factor - 1.0)/2
+        offset_y = h*(FLAGS.resize_factor - 1.0)/2
         annot_data[i+1, 0] = idx
-        annot_data[i+1, 1] = x1
-        annot_data[i+1, 2] = x2
-        annot_data[i+1, 3] = y1
-        annot_data[i+1, 4] = y2 
+        annot_data[i+1, 1] = x1 + offset_x
+        annot_data[i+1, 2] = x2 + offset_x
+        annot_data[i+1, 3] = y1 + offset_y
+        annot_data[i+1, 4] = y2 + offset_y
 
       np.save(os.path.join(FLAGS.train_annot_dir, filename), annot_data)
 
