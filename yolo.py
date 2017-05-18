@@ -22,7 +22,7 @@ tf.flags.DEFINE_integer("batch_size", "32", "batch size for training")
 tf.flags.DEFINE_integer("B", "2", "number of Bound Box in grid cell")
 tf.flags.DEFINE_integer("num_grid", "7", "number of grids vertically, horizontally")
 tf.flags.DEFINE_integer("nclass", "20", "class num")
-tf.flags.DEFINE_float("confidence", "0.3", "confidence limit")
+tf.flags.DEFINE_float("confidence", "0.1", "confidence limit")
 tf.flags.DEFINE_float("learning_rate", "1e-5", "Learning rate for Adam Optimizer")
 tf.flags.DEFINE_float("momentum", "0.9", "momentum for Momentum Optimizer")
 tf.flags.DEFINE_float("eps", "1e-5", "epsilon for various operation")
@@ -78,6 +78,7 @@ def visualization2(img, annot, palette, out=False):
         if c > FLAGS.confidence:
           (y_loc, x_loc) = (row, col)
 
+          name = name + '%2d'%(100*np.max(annot[row, col, :FLAGS.nclass])) + '_%.2f'%(c)
           cx = grid_size*(x_loc + cx)
           cy = grid_size*(y_loc + cy)
           bw = FLAGS.img_size*nw
@@ -96,7 +97,7 @@ def visualization2(img, annot, palette, out=False):
 
           vis_grid= cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
           img = cv2.rectangle(img, b, e, color, 7)
-          img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+          img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
           img = cv2.circle(img, (int(cx), int(cy)), 4, color, -1)
           #img = cv2.circle(img, (int(cx), int(cy)), 4, (255,255,255), -1)
 
@@ -165,7 +166,7 @@ def build_feed_annots(_feed_annots):
   # input image is resized 537x537
   # we will choose random crop size and offset, and resize into 428x428
   # This is equivalent to resize ~20% and crop with the widnow of 428x428
-  scales = np.random.uniform(0.70, 1.0, [batch_size, 1])
+  scales = np.random.uniform(0.60, 1.0, [batch_size, 1])
   offsets = (1 - scales)*np.random.uniform(0.0, 1.0, [batch_size, 2])
   ends = offsets + scales
   feed_scaletrans = np.concatenate([offsets, ends], axis=1)
@@ -221,10 +222,12 @@ def build_feed_annots(_feed_annots):
     for (x_loc, y_loc), (idx, bbs)  in _annot_data.items():
       #print (x_loc, y_loc, idx, bbs)
       feed_annots[i, y_loc, x_loc, idx-1] = 1
-      for bbi in range(min(2, len(bbs))):
-        b = FLAGS.nclass + (1 + 4)*bbi
-        e = b + (1 + 4)
-        feed_annots[i, y_loc, x_loc, b:e] = np.array(bbs[bbi], np.float32)
+      #for bbi in range(min(2, len(bbs))):
+      bbi =  np.random.randint(0, len(bbs))
+      #for bbi in range(1):
+      b = FLAGS.nclass
+      e = b + (1 + 4)
+      feed_annots[i, y_loc, x_loc, b:e] = np.array(bbs[bbi], np.float32)
 
   # annot
   return feed_scaletrans, feed_flips, feed_annots
@@ -443,7 +446,7 @@ def get_opt(loss, scope):
   # Optimizer: set up a variable that's incremented once per batch and
   # controls the learning rate decay.
 #  batch = tf.Variable(0, dtype=tf.int32)
-  global_step = tf.Variable(0, trainable=False)
+  global_step = tf.Variable(0, name='global_step', trainable=False)
   # Decay once per epoch, using an exponential schedule starting at 0.01.
 #  learning_rate = tf.train.exponential_decay(
 #      FLAGS.learning_rate,                # Base learning rate.
@@ -454,7 +457,7 @@ def get_opt(loss, scope):
   # Use simple momentum for the optimization.
 
   learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
-                                                 1, 1.0, staircase=True)
+                                                 1, 0.998, staircase=True)
   learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
   lr_decay_op1 = 0 # learning_rate.assign(1e-3)
   lr_decay_op2 = 0 #learning_rate.assign(1e-4)
@@ -462,11 +465,18 @@ def get_opt(loss, scope):
                                          FLAGS.momentum).minimize(loss,
                                                        var_list=var_list,
                                                        global_step=global_step)
+  learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
+  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+  optimizer = tf.train.AdamOptimizer(learning_rate).minimize(loss, var_list=var_list)
 #
 #  learning_rate = tf.Variable(
 #      float(1e-3), trainable=False, dtype=tf.float32)
 #  lr_decay_op1 = learning_rate.assign(1e-3)
 #  lr_decay_op2 = learning_rate.assign(1e-4)
+#  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+  
+#  learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
+#                                                 10, 0.9995, staircase=True)
 #  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
 #  optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss,
 #                                                                var_list=var_list,
@@ -481,50 +491,35 @@ def get_opt(loss, scope):
 def calculate_loss(y, out):
   # devide y into each boundbox infos and class info
   bbboxs_dim = 5*FLAGS.B
-  yClass, yBBs = tf.split(value=y, num_or_size_splits=[FLAGS.nclass, bbboxs_dim], axis=3)
-  obj, _ = tf.split(value=yBBs, num_or_size_splits=[1, bbboxs_dim - 1], axis=3)
-  yBBs = tf.split(value=yBBs, num_or_size_splits=[5]*FLAGS.B, axis=3)
-  print("yClass")
-  print(yClass)
-  print("yBBs[0]")
-  print(yBBs[0])
-  print("yBBs[1]")
-  print(yBBs[1])
+  yClass = y[:, :, :, :FLAGS.nclass]
+  obj = y[:, :, :, FLAGS.nclass: FLAGS.nclass + 1]
+  yBBs = y[:, :, :, FLAGS.nclass:FLAGS.nclass + 5]
 
   # devide output into each boundbox infos and class info
-  print("out")
-  print(out)
-  Class, BBs = tf.split(value=out, num_or_size_splits=[FLAGS.nclass, bbboxs_dim], axis=3)
-  #Class = tf.nn.softmax(Class)
-  BBs = tf.split(value=BBs, num_or_size_splits=[5]*FLAGS.B, axis=3)
-  print("Class")
-  print(Class)
-  print("BBs[0]")
-  print(BBs[0])
-  print("BBs[1]")
-  print(BBs[1])
+  Class = out[:, :, :, :FLAGS.nclass]
+  BBs = out[:, :, :, FLAGS.nclass:]
 
   # calculate boundbox infos
   lambda_coord = 5
   lambda_noobj = 0.5
 
   coord_term  = 0
+  confi_term  = 0
 
-  out_post = Class
+  yC, yXY, yWH = yBBs[:, :, :, 0:1], yBBs[:, :, :, 1:3], yBBs[:, :, :, 3:5]
+
+  yArea = yWH[:,:,:,0]*yWH[:,:,:,1]
+  yTopLeft = yXY - 0.5*yWH
+  yBotRight = yXY + 0.5*yWH
+
+  IOUs = []
   for i in range(FLAGS.B):
-    yC, yXY, yWH = tf.split(value=yBBs[i], num_or_size_splits=[1, 2, 2], axis=3)
+    offset = i*5
+    C = BBs[:, :, :, offset:offset + 1]
+    XY = BBs[:, :, :, offset + 1:offset +3]
+    sqrtWH  = BBs[:, :, :, offset + 3:offset + 5]
+    WH = tf.square(sqrtWH) 
 
-    yArea = yWH[:,:,:,0]*yWH[:,:,:,1]
-    yTopLeft = yXY - 0.5*yWH
-    yBotRight = yXY + 0.5*yWH
-
-#    yC = tf.Print(yC, [yC, tf.shape(yC)[1:]], summarize=49, message="yC{}:".format(i))
-#    yXY = tf.Print(yXY, [yXY, tf.shape(yXY)[1:]], summarize=49, message="yXY{}:".format(i))
-#    yWH = tf.Print(yWH, [yWH, tf.shape(yWH)[1:]], summarize=49, message="yWH{}:".format(i))
-
-    C, XY, sqrtWH  = tf.split(value=BBs[i], num_or_size_splits=[1, 2, 2], axis=3)
-    WH = tf.square(sqrtWH)
-   
     Area = WH[:,:,:,0]*WH[:,:,:,1]
     TopLeft = XY - 0.5*WH
     BotRight = XY + 0.5*WH
@@ -535,57 +530,64 @@ def calculate_loss(y, out):
     interWH = tf.maximum(interWH, 0.0)
     iArea = interWH[:,:,:,0]*interWH[:,:,:,1]
 
-    uArea = tf.clip_by_value(yArea + Area - iArea, 1e-9, 1.0)
-    iou = tf.expand_dims(iArea/uArea, axis=3)
-    iou = tf.Print(iou, [iou, tf.shape(iou)[1:]], summarize=49, message="iou{}:".format(i))
-#    XY = tf.Print(XY, [XY, tf.shape(XY)[1:]], summarize=49, message="XY{}a:".format(i))
+    #uArea = tf.clip_by_value(yArea + Area - iArea, 1e-9, 1.0)
+    uArea = yArea + Area - iArea
+    iou = tf.expand_dims(tf.truediv(iArea, uArea), axis=3)
+    IOUs.append(iou)
 
-#    XY = tf.Print(XY, [XY, tf.shape(XY)[1:]], summarize=49, message="XY{}a:".format(i))
-#    WH = tf.Print(WH, [WH, tf.shape(WH)[1:]], summarize=49, message="WH{}a:".format(i))
+  IOUs = tf.concat(IOUs, axis=3)
+  best_iou = tf.equal(IOUs, tf.reduce_max(IOUs, [3], True))
+  best_iou = tf.cast(best_iou, tf.float32)
+  Obj = best_iou*yC
+  Score = Obj*IOUs
 
-    #C = tf.nn.sigmoid(C)
-    #XY = tf.nn.sigmoid(XY)
-    #WH = tf.clip_by_value(tf.nn.sigmoid(WH), 1e-6, 1.0)
+  #best_iou = tf.Print(best_iou, [best_iou], summarize=100, message="best_iou:")
+  out_post = [Class]
+  for i in range(FLAGS.B):
+    offset = i*5
+    C = BBs[:, :, :, offset:offset + 1]
+    XY = BBs[:, :, :, offset + 1:offset +3]
+    sqrtWH  = BBs[:, :, :, offset + 3:offset + 5]
+    WH = tf.square(sqrtWH)
 
-#    C = tf.Print(C, [C, tf.shape(C)[1:]], summarize=49, message="C{}:".format(i))
-#    XY = tf.Print(XY, [XY, tf.shape(XY)[1:]], summarize=49, message="XY{}b:".format(i))
-#    WH = tf.Print(WH, [WH, tf.shape(WH)[1:]], summarize=49, message="WH{}b:".format(i))
+    #Score = best_iou[:, :, :, i:i + 1]*C
+    Cdiff = tf.square(Obj - C)
 
-    Cdiff = tf.square(yC - iou*C)
-
-    t0 = lambda_coord*tf.reduce_sum(yC*tf.square(yXY - XY), axis=[1,2,3])
+    t0 = lambda_coord*tf.reduce_sum(Obj*tf.square(yXY - XY), axis=[1,2,3])
 #    t0 = tf.Print(t0, [t0, tf.shape(t0)[1:]], summarize=49, message="[{}] t0:".format(i))
-    
-    t1 = lambda_coord*tf.reduce_sum(yC*tf.square(tf.sqrt(yWH) - sqrtWH), axis=[1,2,3])
+
+    t1 = lambda_coord*tf.reduce_sum(Obj*tf.square(tf.sqrt(yWH) - sqrtWH), axis=[1,2,3])
 #    t1 = tf.Print(t1, [t1, tf.shape(t1)[1:]], summarize=49, message="[{}] t1:".format(i))
-    
-    t2 = tf.reduce_sum(yC*Cdiff, axis=[1,2,3])
+
+    t2 = tf.reduce_sum(Obj*Cdiff, axis=[1,2,3])
 #    t2 = tf.Print(t2, [t2, tf.shape(t2)[1:]], summarize=49, message="[{}] t2".format(i))
-    
-    t3 = lambda_noobj*tf.reduce_sum((1 - yC)*Cdiff, axis=[1,2,3])
+
+    t3 = lambda_noobj*tf.reduce_sum((1 - Obj)*Cdiff, axis=[1,2,3])
 #    t3 = tf.Print(t3, [t3, tf.shape(t3)[1:]], summarize=49, message="[{}] t3:".format(i))
 
-    coord_term += t0 + t1 + t2 + t3
+    coord_term += t0 + t1
+    confi_term += t2 + t3
     #coord_term += tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=C, labels=yC))
 
-    out_post = tf.concat([out_post, C, XY, WH], axis=3)
+    out_post.extend([C, XY, WH])
+
+  out_post = tf.concat(out_post, axis=3)
 
   noobj = 1 - obj
   test = tf.squeeze(noobj[0])
   # calculate boundbox infos
-#  Class = tf.Print(Class, [Class, tf.shape(Class)[1:]], summarize=600, message="Class:")
-  sqrd_cls_err = tf.square(yClass - Class)
+
+#  sqrd_cls_err = tf.square(yClass - Class)
   #class_term = tf.reduce_sum(obj*sqrd_cls_err + lambda_noobj*noobj*sqrd_cls_err)
 #  obj = tf.Print(obj, [obj, tf.shape(obj)[1:]], summarize=600, message="obj:")
 #  sqrd_cls_err = tf.Print(sqrd_cls_err, [sqrd_cls_err, tf.shape(sqrd_cls_err)[1:]], summarize=600, message="sqrd_cls_err:")
-  class_term = obj*sqrd_cls_err
-#  class_term = tf.Print(class_term, [class_term, tf.shape(class_term)[1:]], summarize=600, message="class_term:")
+  class_term = obj*tf.square(yClass - Class)
   class_term = tf.reduce_sum(class_term, axis=[1, 2, 3])
 
-#  coord_term = tf.Print(coord_term, [coord_term, tf.shape(coord_term)], summarize=600, message="coord_term:")
-#  class_term = tf.Print(class_term, [class_term, tf.shape(class_term)], summarize=600, message="class_term:")
-
-  loss = coord_term + class_term
+  coord_term = tf.Print(coord_term, [coord_term], summarize=10, message="coord_term:")
+  confi_term = tf.Print(confi_term, [confi_term], summarize=10, message="confi_term:")
+  class_term = tf.Print(class_term, [class_term], summarize=10, message="class_term:")
+  loss = coord_term + confi_term + class_term
   #loss = class_term
   #loss = coord_term
 
@@ -635,7 +637,6 @@ def main(args):
   annot_list = [os.path.join(FLAGS.train_annot_dir, filename + ".label") for filename in filelist]
 
   mean = tf.constant(np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32))
-
 
   aug = augment_scale_translate_flip(_x, _st, _flip)
   aug = tf.map_fn(lambda x:augment_brightness_saturation(x), aug)
