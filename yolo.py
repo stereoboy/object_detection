@@ -427,6 +427,11 @@ def model_YOLO(x, WEs, BEs, WFCs, BFCs, drop_prob, reuse=False):
 
   return final
 
+def get_epoch():
+  epoch_step = tf.Variable(0, name='epoch_step', trainable=False)
+  epoch_update = epoch_step.assign(epoch_step + 1)
+  return epoch_step, epoch_update
+
 def get_opt(loss, scope):
 
   var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope)
@@ -658,6 +663,8 @@ def main(args):
   out = tf.transpose(_out, perm=[0, 2, 3, 1])
   loss, out_post, test = calculate_loss(y, out)
   print("3. loss setup is done.")
+
+  epoch_step, epoch_update = get_epoch()
   opt, lr_decay_op1, lr_decay_op2 = get_opt(loss, "YOLO")
   print("4. optimizer setup is done.")
 
@@ -692,12 +699,14 @@ def main(args):
 
     for epoch in range(FLAGS.max_epoch):
       print("#####################################################################")
-      print("1:")
+      epoch_val = sess.run(epoch_step)
+      print("epoch: {}".format(epoch_val))
+
       random.shuffle(filelist)
       max_itr = len(filelist)//FLAGS.batch_size
       for itr in range(0, len(filelist)//FLAGS.batch_size):
         print("===================================================================")
-        print("[{}] {}/{}".format(epoch, itr, max_itr))
+        print("[{}] {}/{}".format(epoch_val, itr, max_itr))
 
         # build minibatch
         _batch = filelist[itr:itr + FLAGS.batch_size]
@@ -709,15 +718,15 @@ def main(args):
 
         feed_dict = {_x: feed_imgs, _y: feed_annots, _st: feed_scaletrans, _flip: feed_flips, drop_prob:0.5}
 
-        _, loss_val, out_val = sess.run([opt, loss, out_post], feed_dict=feed_dict)
+        _, loss_val = sess.run([opt, loss, ], feed_dict=feed_dict)
 
         #print("test: {}".format(sess.run(test, feed_dict=feed_dict)))
         print("loss: {}".format(loss_val))
         current = datetime.now()
         print('\telapsed:' + str(current - start))
 
-        if itr % 1 == 0:
-          data_val, aug_val, label_val,  = sess.run([_x, aug, _y], feed_dict=feed_dict)
+        if itr % 100 == 0:
+          data_val, aug_val, label_val, out_val = sess.run([_x, aug, _y, out_post], feed_dict=feed_dict)
           orig_img = cv2.cvtColor(data_val[0],cv2.COLOR_RGB2BGR)
           # crop region
           cr = feed_scaletrans[0]*FLAGS.img_orig_size
@@ -739,6 +748,7 @@ def main(args):
         if key == 27:
           sys.exit()
       print("#######################################################")
+      _ = sess.run(epoch_update)
       saver.save(sess, checkpoint)
 
 
