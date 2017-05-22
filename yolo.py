@@ -12,10 +12,11 @@ import common
 import vgg_16
 import random
 from PIL import Image
+import image_process as improc
 
 FLAGS = tf.flags.FLAGS
-#tf.flags.DEFINE_string("device", "/cpu:*", "device")
-tf.flags.DEFINE_string("device", "/gpu:*", "device")
+tf.flags.DEFINE_string("device", "/cpu:*", "device")
+#tf.flags.DEFINE_string("device", "/gpu:*", "device")
 tf.flags.DEFINE_integer("max_epoch", "200", "maximum iterations for training")
 #tf.flags.DEFINE_integer("batch_size", "64", "batch size for training")
 tf.flags.DEFINE_integer("batch_size", "32", "batch size for training")
@@ -232,44 +233,6 @@ def build_feed_annots(_feed_annots):
   # annot
   return feed_scaletrans, feed_flips, feed_annots
 
-def augment_brightness_saturation(image):
-
-  # all functions include clamping for overflow values
-  image = tf.image.random_brightness(image, max_delta=0.3)
-  image = tf.image.random_saturation(image, lower=0.7, upper=1.3)
-  return image
-
-def augment_gaussian_noise(images, std=0.2):
-  noise = tf.random_normal(shape=tf.shape(images), mean=0.0, stddev=std, dtype=tf.float32)
-  return images + noise
-
-def augment_scale_translate_flip(images, boxes, flip, scale_range=0.2):
-
-  #batch_size = images.get_shape()[0]
-  batch_size = FLAGS.batch_size # this value should be fixed up
-
-  # Translation
-  scale = 1.0 + tf.random_uniform([1], minval=0.0, maxval=scale_range)
-  size = tf.constant([FLAGS.img_size, FLAGS.img_size])
-  new_size = scale*tf.cast(size, dtype=tf.float32)
-
-  box_ind = tf.range(start=0, limit=batch_size, dtype=tf.int32)
-
-  images = tf.image.crop_and_resize(
-      images,
-      boxes=boxes,
-      box_ind=box_ind,
-      crop_size=size
-      )
-
-  idxs = tf.range(0, batch_size, dtype=tf.int32)
-  def flip_left_right(i):
-    image = images[i]
-    flip_or_not = flip[i]
-    return tf.cond(flip_or_not, lambda: tf.reverse(image, axis=[1]), lambda: image)
-
-  images = tf.map_fn(lambda idx:flip_left_right(idx), idxs, dtype=tf.float32)
-  return images
 
 #def random_crop(value, size, seed=None, name=None):
 #  """Randomly crops a tensor to a given size.
@@ -636,41 +599,41 @@ def main(args):
   img_list = [os.path.join(FLAGS.train_img_dir, filename + ".png") for filename in filelist]
   annot_list = [os.path.join(FLAGS.train_annot_dir, filename + ".label") for filename in filelist]
 
-  mean = tf.constant(np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32))
+  mean = tf.constant(np.array((122.67891434, 116.66876762, 104.00698793), dtype=np.float32))
 
-  aug = augment_scale_translate_flip(_x, _st, _flip)
-  aug = tf.map_fn(lambda x:augment_brightness_saturation(x), aug)
+  aug = improc.augment_scale_translate_flip(_x, FLAGS.img_size, _st, _flip, FLAGS.batch_size)
+  aug = tf.map_fn(lambda x:improc.augment_br_sat_hue_cont(x), aug)
   x = tf.cast(aug, dtype=tf.float32) - mean
-  x = augment_gaussian_noise(x)
+  x = improc.augment_gaussian_noise(x)
   y = _y
 
-#  with tf.device(FLAGS.device):
-  x = tf.transpose(x, perm=[0, 3, 1, 2])
-  print("0. input setup is done.")
+  with tf.device(FLAGS.device):
+    x = tf.transpose(x, perm=[0, 3, 1, 2])
+    print("0. input setup is done.")
 
 
-  with tf.variable_scope("vgg_16") as scope:
-    Ws, Bs = vgg_16.init_VGG16(pretrained)
+    with tf.variable_scope("vgg_16") as scope:
+      Ws, Bs = vgg_16.init_VGG16(pretrained)
 
-  with tf.variable_scope("YOLO") as scope:
-    WEs, BEs, WFCs, BFCs, = init_YOLOBE()
+    with tf.variable_scope("YOLO") as scope:
+      WEs, BEs, WFCs, BFCs, = init_YOLOBE()
 
-  print("1. variable setup is done.")
+    print("1. variable setup is done.")
 
-  _out = vgg_16.model_VGG16(x, Ws, Bs)
-  _out = model_YOLO(_out, WEs, BEs, WFCs, BFCs, drop_prob=drop_prob)
-  print("2. model setup is done.")
+    _out = vgg_16.model_VGG16(x, Ws, Bs)
+    _out = model_YOLO(_out, WEs, BEs, WFCs, BFCs, drop_prob=drop_prob)
+    print("2. model setup is done.")
 
-  out = tf.transpose(_out, perm=[0, 2, 3, 1])
-  loss, out_post, test = calculate_loss(y, out)
-  print("3. loss setup is done.")
+    out = tf.transpose(_out, perm=[0, 2, 3, 1])
+    loss, out_post, test = calculate_loss(y, out)
+    print("3. loss setup is done.")
 
-  epoch_step, epoch_update = get_epoch()
-  opt, lr_decay_op1, lr_decay_op2 = get_opt(loss, "YOLO")
-  print("4. optimizer setup is done.")
+    epoch_step, epoch_update = get_epoch()
+    opt, lr_decay_op1, lr_decay_op2 = get_opt(loss, "YOLO")
+    print("4. optimizer setup is done.")
 
-  init_op = tf.group(tf.global_variables_initializer(),
-                   tf.local_variables_initializer())
+    init_op = tf.group(tf.global_variables_initializer(),
+                     tf.local_variables_initializer())
 
   print("all graph setup is done")
 
