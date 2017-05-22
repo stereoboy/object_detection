@@ -1,12 +1,14 @@
 import tensorflow as tf
+import numpy as np
+import cv2
 
 def augment_br_sat_hue_cont(image):
 
   # all functions include clamping for overflow values
   image = tf.image.random_brightness(image, max_delta=0.3)
   image = tf.image.random_saturation(image, lower=0.7, upper=1.3)
-  image = tf.image.random_hue(image, max_delta=0.032)
-  image = tf.image.random_contrast(image, lower=0.7, upper=1.3)
+  #image = tf.image.random_hue(image, max_delta=0.032)
+  #image = tf.image.random_contrast(image, lower=0.7, upper=1.3)
   return image
 
 def augment_gaussian_noise(images, std=0.2):
@@ -59,6 +61,26 @@ def cal_iou(box1, box2):
 
   return float(intersect_area)/union_area
 
+def cvt_bbox2cwh(bbox):
+  upleft, downright = bbox
+  x1, y1 = upleft
+  x2, y2 = downright
+
+  x, y = (x1 + x2)/2.0, (y1 + y2)/2.0
+  w, h = (x2 - x1), (y2 - y1)
+  
+  return ((x, y), (w, h))
+
+def cvt_cwh2bbox(cwh):
+  xy, wh = cwh 
+  x, y = xy 
+  w, h = wh
+
+  x1, y1 = x - w/2.0, y - h/2.0
+  x2, y2 = x + w/2.0, y + h/2.0
+
+  return ((x1, y1), (x2, y2))
+
 def img_listup(imgs):
   size = len(imgs)
   (h, w) = imgs[0].shape[:2]
@@ -76,12 +98,10 @@ def img_listup(imgs):
 
   return out
 
-def visualization_orig(img, _annot, num_grid, idx2obj, palette):
-  print("visualization()")
+def visualization_orig(img, _annot, idx2obj, palette):
+  print("visualization_orig()")
   h, w = img.shape[:2]
-  grid_size = float(h)/num_grid
 
-  w_grid, h_grid = (w/num_grid, h/num_grid)
   _w, _h = _annot[0, :2]
   scale_w, scale_h = float(w)/_w, float(h)/_h
   for box in _annot[1:]:
@@ -93,15 +113,9 @@ def visualization_orig(img, _annot, num_grid, idx2obj, palette):
     name = idx2obj[idx]
 
     cx, cy = (scale_w*(x1 + x2)/2.0, scale_h*(y1 + y2)/2.0)
-    x_loc = cx//w_grid
-    y_loc = cy//h_grid
-
-    grid_b = (int(grid_size*x_loc), int(grid_size*y_loc))
-    grid_e = (int(grid_size*(x_loc+1)), int(grid_size*(y_loc+1)))
 
     b = (int(scale_w*x1), int(scale_h*y1))
     e = (int(scale_w*x2), int(scale_h*y2))
-    #img = cv2.rectangle(img, grid_b, grid_e, color, -1)
     img = cv2.rectangle(img, b, e, color, 5)
     img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
     img = cv2.circle(img, (int(cx), int(cy)), 4, color, -1)
