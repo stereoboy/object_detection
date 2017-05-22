@@ -1,0 +1,110 @@
+import tensorflow as tf
+
+def augment_br_sat_hue_cont(image):
+
+  # all functions include clamping for overflow values
+  image = tf.image.random_brightness(image, max_delta=0.3)
+  image = tf.image.random_saturation(image, lower=0.7, upper=1.3)
+  image = tf.image.random_hue(image, max_delta=0.032)
+  image = tf.image.random_contrast(image, lower=0.7, upper=1.3)
+  return image
+
+def augment_gaussian_noise(images, std=0.2):
+  noise = tf.random_normal(shape=tf.shape(images), mean=0.0, stddev=std, dtype=tf.float32)
+  return images + noise
+
+def augment_scale_translate_flip(images, img_size, boxes, flip, batch_size, scale_range=0.2):
+
+  #batch_size = images.get_shape()[0]
+  #batch_size = FLAGS.batch_size # this value should be fixed up
+
+  # Translation
+  scale = 1.0 + tf.random_uniform([1], minval=0.0, maxval=scale_range)
+  size = tf.constant([img_size, img_size])
+  new_size = scale*tf.cast(size, dtype=tf.float32)
+
+  box_ind = tf.range(start=0, limit=batch_size, dtype=tf.int32)
+
+  images = tf.image.crop_and_resize(
+      images,
+      boxes=boxes,
+      box_ind=box_ind,
+      crop_size=size
+      )
+
+  idxs = tf.range(0, batch_size, dtype=tf.int32)
+  def flip_left_right(i):
+    image = images[i]
+    flip_or_not = flip[i]
+    return tf.cond(flip_or_not, lambda: tf.reverse(image, axis=[1]), lambda: image)
+
+  images = tf.map_fn(lambda idx:flip_left_right(idx), idxs, dtype=tf.float32)
+  return images
+
+def cal_area(box):
+  w, h = np.array(box[1]) - np.array(box[0])
+  return w*h
+
+def cal_iou(box1, box2):
+  area1 = cal_area(box1)
+  area2 = cal_area(box2)
+
+  upleft = np.maximum(box1[0], box2[0])
+  downright = np.minimum(box1[1], box2[1])
+
+  intersect = np.maximum((.0, .0), downright - upleft)
+
+  intersect_area = intersect[0]*intersect[1]
+  union_area = area1 + area2 - intersect_area
+
+  return float(intersect_area)/union_area
+
+def img_listup(imgs):
+  size = len(imgs)
+  (h, w) = imgs[0].shape[:2]
+
+  total_w = 0
+  for img in imgs:
+    total_w += img.shape[1]
+  out = np.zeros((h, total_w, 3), np.uint8)
+
+  offset = 0
+  for i in range(size):
+    h, w = imgs[i].shape[:2]
+    out[:h, offset: offset + w] = imgs[i]
+    offset += w
+
+  return out
+
+def visualization_orig(img, _annot, num_grid, idx2obj, palette):
+  print("visualization()")
+  h, w = img.shape[:2]
+  grid_size = float(h)/num_grid
+
+  w_grid, h_grid = (w/num_grid, h/num_grid)
+  _w, _h = _annot[0, :2]
+  scale_w, scale_h = float(w)/_w, float(h)/_h
+  for box in _annot[1:]:
+    idx, x1, x2, y1, y2 = box
+    idx = int(idx)
+    _color = palette[idx]
+    color = (int(_color[2]), int(_color[1]), int(_color[0]))
+
+    name = idx2obj[idx]
+
+    cx, cy = (scale_w*(x1 + x2)/2.0, scale_h*(y1 + y2)/2.0)
+    x_loc = cx//w_grid
+    y_loc = cy//h_grid
+
+    grid_b = (int(grid_size*x_loc), int(grid_size*y_loc))
+    grid_e = (int(grid_size*(x_loc+1)), int(grid_size*(y_loc+1)))
+
+    b = (int(scale_w*x1), int(scale_h*y1))
+    e = (int(scale_w*x2), int(scale_h*y2))
+    #img = cv2.rectangle(img, grid_b, grid_e, color, -1)
+    img = cv2.rectangle(img, b, e, color, 5)
+    img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
+    img = cv2.circle(img, (int(cx), int(cy)), 4, color, -1)
+
+  return img
+
