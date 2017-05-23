@@ -15,6 +15,8 @@ import random
 from PIL import Image
 import image_process as improc
 
+os.environ['TF_ENABLE_WINOGRAD_NONFUSED'] = '1'
+
 FLAGS = tf.flags.FLAGS
 #tf.flags.DEFINE_string("device", "/cpu:*", "device")
 tf.flags.DEFINE_string("device", "/gpu:*", "device")
