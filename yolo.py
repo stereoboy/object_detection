@@ -15,8 +15,8 @@ from PIL import Image
 import image_process as improc
 
 FLAGS = tf.flags.FLAGS
-tf.flags.DEFINE_string("device", "/cpu:*", "device")
-#tf.flags.DEFINE_string("device", "/gpu:*", "device")
+#tf.flags.DEFINE_string("device", "/cpu:*", "device")
+tf.flags.DEFINE_string("device", "/gpu:*", "device")
 tf.flags.DEFINE_integer("max_epoch", "200", "maximum iterations for training")
 #tf.flags.DEFINE_integer("batch_size", "64", "batch size for training")
 tf.flags.DEFINE_integer("batch_size", "32", "batch size for training")
@@ -455,8 +455,8 @@ def calculate_loss(y, out):
   # devide y into each boundbox infos and class info
   bbboxs_dim = 5*FLAGS.B
   yClass = y[:, :, :, :FLAGS.nclass]
-  obj = y[:, :, :, FLAGS.nclass: FLAGS.nclass + 1]
-  yBBs = y[:, :, :, FLAGS.nclass:FLAGS.nclass + 5]
+  obj    = y[:, :, :, FLAGS.nclass:FLAGS.nclass + 1]
+  yBBs   = y[:, :, :, FLAGS.nclass:FLAGS.nclass + 5]
 
   # devide output into each boundbox infos and class info
   Class = out[:, :, :, :FLAGS.nclass]
@@ -607,33 +607,33 @@ def main(args):
   x = improc.augment_gaussian_noise(x)
   y = _y
 
-  with tf.device(FLAGS.device):
-    x = tf.transpose(x, perm=[0, 3, 1, 2])
-    print("0. input setup is done.")
+  #with tf.device(FLAGS.device):
+  x = tf.transpose(x, perm=[0, 3, 1, 2])
+  print("0. input setup is done.")
 
 
-    with tf.variable_scope("vgg_16") as scope:
-      Ws, Bs = vgg_16.init_VGG16(pretrained)
+  with tf.variable_scope("vgg_16") as scope:
+    Ws, Bs = vgg_16.init_VGG16(pretrained)
 
-    with tf.variable_scope("YOLO") as scope:
-      WEs, BEs, WFCs, BFCs, = init_YOLOBE()
+  with tf.variable_scope("YOLO") as scope:
+    WEs, BEs, WFCs, BFCs, = init_YOLOBE()
 
-    print("1. variable setup is done.")
+  print("1. variable setup is done.")
 
-    _out = vgg_16.model_VGG16(x, Ws, Bs)
-    _out = model_YOLO(_out, WEs, BEs, WFCs, BFCs, drop_prob=drop_prob)
-    print("2. model setup is done.")
+  _out = vgg_16.model_VGG16(x, Ws, Bs)
+  _out = model_YOLO(_out, WEs, BEs, WFCs, BFCs, drop_prob=drop_prob)
+  print("2. model setup is done.")
 
-    out = tf.transpose(_out, perm=[0, 2, 3, 1])
-    loss, out_post, test = calculate_loss(y, out)
-    print("3. loss setup is done.")
+  out = tf.transpose(_out, perm=[0, 2, 3, 1])
+  loss, out_post, test = calculate_loss(y, out)
+  print("3. loss setup is done.")
 
-    epoch_step, epoch_update = get_epoch()
-    opt, lr_decay_op1, lr_decay_op2 = get_opt(loss, "YOLO")
-    print("4. optimizer setup is done.")
+  epoch_step, epoch_update = get_epoch()
+  opt, lr_decay_op1, lr_decay_op2 = get_opt(loss, "YOLO")
+  print("4. optimizer setup is done.")
 
-    init_op = tf.group(tf.global_variables_initializer(),
-                     tf.local_variables_initializer())
+  init_op = tf.group(tf.global_variables_initializer(),
+                   tf.local_variables_initializer())
 
   print("all graph setup is done")
 
