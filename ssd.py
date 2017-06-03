@@ -21,11 +21,11 @@ FLAGS = tf.flags.FLAGS
 #tf.flags.DEFINE_string("device", "/cpu:*", "device")
 tf.flags.DEFINE_string("device", "/gpu:*", "device")
 tf.flags.DEFINE_integer("max_epoch", "200", "maximum iterations for training")
-#tf.flags.DEFINE_integer("batch_size", "64", "batch size for training")
 tf.flags.DEFINE_integer("batch_size", "32", "batch size for training")
 tf.flags.DEFINE_integer("nclass", "20", "class num")
 tf.flags.DEFINE_float("confidence", "0.1", "confidence limit")
-tf.flags.DEFINE_float("learning_rate", "1e-5", "Learning rate for Adam Optimizer")
+tf.flags.DEFINE_float("negative_ratio", "3.0", "ratio between negative and positive samples")
+tf.flags.DEFINE_float("learning_rate", "1e-3", "Learning rate for Adam Optimizer")
 tf.flags.DEFINE_float("momentum", "0.9", "momentum for Momentum Optimizer")
 tf.flags.DEFINE_float("eps", "1e-5", "epsilon for various operation")
 tf.flags.DEFINE_float("beta1", "0.5", "beta1 for Adam optimizer")
@@ -209,7 +209,7 @@ def init_anchor_scales(num_layers):
     scale_list.append(scales)
   return scale_list
 
-def model_ssd(frontend, ):
+def model_ssd(frontend):
 
   with slim.arg_scope([slim.conv2d],
                       activation_fn=tf.nn.relu,
@@ -233,6 +233,158 @@ def model_ssd(frontend, ):
     conv9_2 = slim.conv2d(conv9_1, 512, [3, 3], stride=2, padding='SAME', scope='conv9_2')
 
   return conv6_2, conv7_2, conv8_2, conv9_2
+
+def model_backend(out_layers, anchor_scales_list):
+
+  ret_layers = []
+  for i, (layer, anchor_scales) in enumerate(zip(out_layers, anchor_scales_list)):
+    out_size = (FLAGS.nclass + 4)*len(anchor_scales)
+
+    _out = slim.conv2d(layer, out_size, [3, 3], stride=1, padding='SAME', data_format='NCHW', scope='backend{}'.format(i))
+    out = tf.transpose(_out, perm=[0, 2, 3, 1])
+    ret_layers.append(out)
+
+  return ret_layers
+
+def smooth_l1_loss(x):
+
+  cond = tf.abs(x) < 1.0
+  square = 0.5*tf.square(x)
+  absolute = tf.abs(x) - 0.5
+  return tf.where(cond, square, absolute)
+
+def calculate_loss(ys, outs, anchor_scales_list):
+
+  flat_class_y   = []
+  flat_class_out = []
+
+  flat_coord_y   = []
+  flat_coord_out = []
+
+
+  for i in range(len(ys)):
+    y, out, anchor_scales = ys[i], outs[i], anchor_scales_list[i]
+
+    offset = 0
+    print("i:",i, y, out)
+    for j, anchor_scale in enumerate(anchor_scales):
+      print("j:",j)
+      class_y = y[:, :, :, offset:offset + FLAGS.nclass]
+      print(class_y)
+      class_y = tf.reshape(class_y, shape=[FLAGS.batch_size, -1, FLAGS.nclass])
+      print(class_y)
+
+      class_out = out[:, :, :, offset:offset + FLAGS.nclass]
+      class_out = tf.reshape(class_out, shape=[FLAGS.batch_size, -1, FLAGS.nclass])
+
+      coord_y = y[:, :, :, offset + FLAGS.nclass: offset + FLAGS.nclass + 4]
+      coord_y = tf.reshape(coord_y, shape=[FLAGS.batch_size, -1, 4])
+
+      coord_out = out[:, :, :, offset + FLAGS.nclass: offset + FLAGS.nclass + 4]
+      coord_out = tf.reshape(coord_out, shape=[FLAGS.batch_size, -1, 4])
+
+      flat_class_y.append(class_y)
+      flat_class_out.append(class_out)
+      flat_coord_y.append(coord_y)
+      flat_coord_out.append(coord_out)
+
+      offset += (FLAGS.nclass + 4)
+
+  flat_class_y = tf.concat(flat_class_y, axis=1)
+  flat_class_out = tf.concat(flat_class_out, axis=1)
+  flat_coord_y = tf.concat(flat_coord_y, axis=1)
+  flat_coord_out = tf.concat(flat_coord_out, axis=1)
+  print('flat_class_y', flat_class_y)
+  print('flat_class_out', flat_class_out)
+  print('flat_coord_y', flat_coord_y)
+  print('flat_coord_out', flat_coord_out)
+
+  positive_mask = tf.reduce_max(flat_class_y, axis=2) > 0.5
+  negative_mask = tf.logical_not(positive_mask)
+
+  positive_mask = tf.cast(positive_mask, dtype=tf.float32)
+  positive_num  = tf.reduce_sum(positive_mask, axis=1)
+  negative_mask = tf.cast(negative_mask, dtype=tf.float32)
+  negative_num  = tf.reduce_sum(negative_mask, axis=1)
+
+  print('positive_mask', positive_mask)
+  print('negative_mask', negative_mask)
+  print('positive_num', positive_num)
+  print('negative_num', negative_num)
+
+  negative_num = tf.cast(tf.minimum(negative_num, positive_num*FLAGS.negative_ratio), dtype=tf.int32)
+
+  conf_loss = tf.nn.softmax_cross_entropy_with_logits(logits=flat_class_out, labels=flat_class_y)
+  #values, indices = tf.nn.top_k(-(conf_loss*negative_mask), k=negative_num)
+
+  loc_loss = smooth_l1_loss(flat_coord_out - flat_coord_y)
+
+  loss = tf.reduce_sum(conf_loss*positive_mask, axis=1)
+  #loss += tf.reduce_sum(values, axis=1)
+  loss += tf.reduce_sum(loc_loss, axis=[1, 2])
+  print(loss)
+
+  loss = tf.div(loss, positive_num)
+  print(loss)
+  loss = tf.reduce_mean(loss)
+  print(loss)
+  return loss
+
+def get_opt(loss, scope):
+
+  print('loss:{}'.format(loss))
+
+  var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope)
+
+  print("==get_opt()============================")
+  print(scope)
+  for item in var_list:
+    print(item.name)
+  # Optimizer: set up a variable that's incremented once per batch and
+  # controls the learning rate decay.
+#  batch = tf.Variable(0, dtype=tf.int32)
+  global_step = tf.Variable(0, name='global_step', trainable=False)
+  # Decay once per epoch, using an exponential schedule starting at 0.01.
+#  learning_rate = tf.train.exponential_decay(
+#      FLAGS.learning_rate,                # Base learning rate.
+#      batch,  # Current index into the dataset.
+#      1,          # Decay step.
+#      FLAGS.weight_decay,                # Decay rate.
+#      staircase=True)
+  # Use simple momentum for the optimization.
+
+#  learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
+#                                                 1, 0.998, staircase=True)
+  learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
+#  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+  lr_decay_op1 = learning_rate.assign(1e-4)
+  lr_decay_op2 = learning_rate.assign(1e-5)
+  optimizer = tf.train.MomentumOptimizer(learning_rate, FLAGS.momentum)
+#  optimizer = tf.train.AdamOptimizer(learning_rate)
+  opt = optimizer.minimize(loss, var_list=var_list, global_step=global_step)
+
+#  learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
+#  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+#  optimizer = tf.train.AdamOptimizer(learning_rate).minimize(loss, var_list=var_list)
+#
+#  learning_rate = tf.Variable(
+#      float(1e-3), trainable=False, dtype=tf.float32)
+#  lr_decay_op1 = learning_rate.assign(1e-3)
+#  lr_decay_op2 = learning_rate.assign(1e-4)
+#  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+
+#  learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
+#                                                 10, 0.9995, staircase=True)
+#  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+#  optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss,
+#                                                                var_list=var_list,
+#                                                                global_step=global_step)
+
+  return opt, lr_decay_op1, lr_decay_op2
+#  return tf.train.AdamOptimizer(0.0001).minimize(loss)
+#  optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate, beta1=FLAGS.beta1)
+#  grads = optimizer.compute_gradients(loss, var_list=var_list)
+#  return optimizer.apply_gradients(grads)
 
 def main(args):
 
@@ -285,15 +437,19 @@ def main(args):
 
     with tf.variable_scope('ssd') as scope:
       layers = model_ssd(vgg_outs)
+
     out_layers.extend(layers)
 
-    print(out_layers)
-    anchor_scales = init_anchor_scales(len(out_layers))
-    anchor_infos = zip(out_layers, anchor_scales)
-    print(anchor_infos)
+
+    anchor_scales_list = init_anchor_scales(len(out_layers))
+    with tf.variable_scope('ssd') as scope:
+      out_layers = model_backend(out_layers, anchor_scales_list)
+
+    anchor_infos = list(zip(out_layers, anchor_scales_list))
+    print(list(anchor_infos))
     print("1. network setup is done.")
 
-    print('regularization:', tf.losses.get_regularization_losses(scope='ssd'))
+    print('regularization:', tf.losses.get_regularization_loss(scope='ssd'))
     print('layers', layers)
 
     _y = []
@@ -304,18 +460,23 @@ def main(args):
       _y.append(ph)
     print("2. label setup is done.")
 
+    loss = calculate_loss(_y, out_layers, anchor_scales_list)
+    tf.losses.add_loss(loss)
+    total_loss = tf.losses.get_total_loss()
+    print('get_loss', tf.losses.get_losses())
     print("3. loss setup is done.")
 
+    var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+    print("==get_opt()============================")
+    for item in var_list:
+      print(item.name)
+    opt = get_opt(total_loss, 'ssd')
     print("4. optimizer setup is done.")
 
     epoch_step, epoch_update = utils.get_epoch()
     init_op = tf.group(tf.global_variables_initializer(),
                      tf.local_variables_initializer())
-    var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
 
-    print("==get_opt()============================")
-    for item in var_list:
-      print(item.name)
     print("5. misc setup is done.")
 
     config=tf.ConfigProto()
@@ -357,13 +518,21 @@ def main(args):
 
           feed_scaletrans, feed_flips, feed_annots_list = build_feed_annots(_feed_annots, anchor_infos)
 
-          assert len(anchor_infos) == len(feed_annots_list), "anchor_infos and feed_annots_list should have same length"
+          assert len(list(anchor_infos)) == len(feed_annots_list), "anchor_infos and feed_annots_list should have same length"
 
           feed_dict = {_x: feed_imgs, _st: feed_scaletrans, _flip: feed_flips, drop_prob:0.5}
+          print(_y)
+          print("------------------------------------------------------")
           for ph, feed_annots in zip(_y, feed_annots_list):
+
+            print(ph)
+            print(feed_annots.shape)
             feed_dict[ph] = feed_annots
 
-          if itr % 1 == 0:
+          print("------------------------------------------------------")
+
+          _, _ = sess.run([opt, total_loss], feed_dict=feed_dict)
+          if itr % 100 == 0:
             data_val, aug_val = sess.run([_x, aug], feed_dict=feed_dict)
             label_val = sess.run(_y, feed_dict=feed_dict)
             out_val = sess.run(_y, feed_dict=feed_dict)
@@ -386,7 +555,7 @@ def main(args):
             out_img = visualization(out_img, out_val, anchor_infos, idx2obj, palette)
             cv2.imshow('input', improc.img_listup([orig_img, aug_img, out_img]))
 
-          key = cv2.waitKey(0)
+          key = cv2.waitKey(5)
           if key == 27:
             sys.exit()
 

@@ -39,7 +39,7 @@ def setup_vgg_16():
   if not tf.gfile.Exists(checkpoints_dir):
     tf.gfile.MakeDirs(checkpoints_dir)
   if not tf.gfile.Exists(os.path.join(checkpoints_dir, 'vgg_16.ckpt')):
-		download_and_uncompress_tarball(url, checkpoints_dir)
+    download_and_uncompress_tarball(url, checkpoints_dir)
 
 def vgg_arg_scope(weight_decay=0.0005):
   """Defines the VGG arg scope.
