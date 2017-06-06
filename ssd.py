@@ -7,7 +7,6 @@ import json
 from datetime import datetime, date, time
 import cv2
 import sys
-import getopt
 import voc 
 import utils
 import vgg_16
@@ -161,6 +160,9 @@ def build_feed_annots(_feed_annots, anchor_infos):
         x_loc, y_loc = int(cx*w_num_grid), int(cy*h_num_grid)
         idx = int(idx)
 
+        if x_loc < 0 or y_loc < 0 or x_loc >= FLAGS.num_grid or y_loc >= FLAGS.num_grid:
+          continue
+
         offset = 0
         for anchor_scale in anchor_scales:
           anchor_w, anchor_h = anchor_scale
@@ -188,6 +190,7 @@ def build_feed_annots(_feed_annots, anchor_infos):
   return feed_scaletrans, feed_flips, feed_annots_list
 
 
+# 1.0 means total image width
 def init_anchor_scales(num_layers):
 
   min_scale = 0.2
@@ -261,7 +264,6 @@ def calculate_loss(ys, outs, anchor_scales_list):
   flat_coord_y   = []
   flat_coord_out = []
 
-
   for i in range(len(ys)):
     y, out, anchor_scales = ys[i], outs[i], anchor_scales_list[i]
 
@@ -315,7 +317,13 @@ def calculate_loss(ys, outs, anchor_scales_list):
   negative_num = tf.cast(tf.minimum(negative_num, positive_num*FLAGS.negative_ratio), dtype=tf.int32)
 
   conf_loss = tf.nn.softmax_cross_entropy_with_logits(logits=flat_class_out, labels=flat_class_y)
-  #values, indices = tf.nn.top_k(-(conf_loss*negative_mask), k=negative_num)
+
+  negative_loss = 0
+  for i in range(FLAGS.batch_size):
+    values, indices = tf.nn.top_k(-(conf_loss[i]*negative_mask[i]), k=negative_num[i])
+    negative_loss += tf.reduce_sum(values)
+
+  negative_loss /= FLAGS.batch_size
 
   loc_loss = smooth_l1_loss(flat_coord_out - flat_coord_y)
 
@@ -326,7 +334,7 @@ def calculate_loss(ys, outs, anchor_scales_list):
 
   loss = tf.div(loss, positive_num)
   print(loss)
-  loss = tf.reduce_mean(loss)
+  loss = tf.reduce_mean(loss) + negative_loss
   print(loss)
   return loss
 
@@ -451,6 +459,9 @@ def main(args):
 
     print('regularization:', tf.losses.get_regularization_loss(scope='ssd'))
     print('layers', layers)
+
+    regularization_loss = tf.losses.get_regularization_loss(scope='ssd')
+    tf.losses.add_loss(regularization_loss)
 
     _y = []
     for layer, anchor_scale in anchor_infos:
