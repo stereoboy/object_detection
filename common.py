@@ -224,3 +224,8 @@ def visualization(img, _annot, num_grid, palette):
 
   return img
 
+def logit(x):
+  return np.log(x) - np.log(1 - x)
+
+def sigmoid(x):
+  return 1.0/(1.0 + np.exp(-x))
