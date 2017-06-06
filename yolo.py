@@ -197,10 +197,8 @@ def build_feed_annots(_feed_annots):
     _annot_data = {}
     for box in annot[1:]:
       idx, x1, x2, y1, y2 = box
-      x1 = max(0.0, x1)
-      x2 = min(w, x2)
-      y1 = max(0.0, y1)
-      y2 = min(h, y2)
+      x1, x2 = np.max((0.0, x1)), np.min((w, x2))
+      y1, y2 = np.max((0.0, y1)), np.min((h, y2))
 
       if feed_flips[i]:
         x1 = w - x1
@@ -213,7 +211,7 @@ def build_feed_annots(_feed_annots):
       (x_loc, y_loc), (cx, cy, nw, nh) = common.cal_rel_coord(w, h, x1, x2, y1, y2, w_grid, h_grid)
 
       # if object is still on cropped region
-      if x_loc >= 0 and x_loc < 7 and y_loc >= 0 and y_loc < 7:
+      if x_loc >= 0 and x_loc < FLAGS.num_grid and y_loc >= 0 and y_loc < FLAGS.num_grid:
         if not (x_loc, y_loc) in _annot_data.keys():
           _annot_data[(x_loc, y_loc)] = (idx, [])
           _annot_data[(x_loc, y_loc)][1].append((1.0, cx, cy, nw, nh))
@@ -453,7 +451,6 @@ def get_opt(loss, scope):
 
 def calculate_loss(y, out):
   # devide y into each boundbox infos and class info
-  bbboxs_dim = 5*FLAGS.B
   yClass = y[:, :, :, :FLAGS.nclass]
   obj    = y[:, :, :, FLAGS.nclass:FLAGS.nclass + 1]
   yBBs   = y[:, :, :, FLAGS.nclass:FLAGS.nclass + 5]
