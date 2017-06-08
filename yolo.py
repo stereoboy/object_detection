@@ -420,8 +420,8 @@ def get_opt(loss, scope):
   learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
                                                  1, 0.998, staircase=True)
   learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
-  lr_decay_op1 = 0 # learning_rate.assign(1e-3)
-  lr_decay_op2 = 0 #learning_rate.assign(1e-4)
+  lr_decay_op1 = tf.assign(learning_rate, 1e-3)
+  lr_decay_op2 = tf.assign(learning_rate, 1e-4)
   optimizer = tf.train.MomentumOptimizer(learning_rate,
                                          FLAGS.momentum).minimize(loss,
                                                        var_list=var_list,
@@ -478,7 +478,7 @@ def calculate_loss(y, out):
     C = BBs[:, :, :, offset:offset + 1]
     XY = BBs[:, :, :, offset + 1:offset +3]
     sqrtWH  = BBs[:, :, :, offset + 3:offset + 5]
-    WH = tf.square(sqrtWH) 
+    WH = tf.square(sqrtWH)
 
     Area = WH[:,:,:,0]*WH[:,:,:,1]
     TopLeft = XY - 0.5*WH
@@ -670,7 +670,9 @@ def main(args):
         print("[{}] {}/{}".format(epoch_val, itr, max_itr))
 
         # build minibatch
-        _batch = filelist[itr:itr + FLAGS.batch_size]
+        b = itr*FLAGS.batch_size
+        e = b + FLAGS.batch_size
+        _batch = filelist[b:e]
 
         feed_imgs = load_imgs(_batch)
         _feed_annots = load_annots(_batch)
