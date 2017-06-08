@@ -9,6 +9,7 @@ import cv2
 import sys
 import voc 
 import utils
+import common
 import vgg_16
 import random
 from PIL import Image
@@ -21,7 +22,8 @@ FLAGS = tf.flags.FLAGS
 tf.flags.DEFINE_string("device", "/gpu:*", "device")
 tf.flags.DEFINE_integer("max_epoch", "200", "maximum iterations for training")
 tf.flags.DEFINE_integer("batch_size", "32", "batch size for training")
-tf.flags.DEFINE_integer("nclass", "20", "class num")
+tf.flags.DEFINE_integer("nclass", "21", "class num")
+tf.flags.DEFINE_float("iou_threshold", "0.5", "threshold for jaccard overlay(iou)")
 tf.flags.DEFINE_float("confidence", "0.1", "confidence limit")
 tf.flags.DEFINE_float("negative_ratio", "3.0", "ratio between negative and positive samples")
 tf.flags.DEFINE_float("learning_rate", "1e-3", "Learning rate for Adam Optimizer")
@@ -42,10 +44,11 @@ tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base direct
 tf.flags.DEFINE_string("train_img_dir", "./train_img", "base directory for data")
 tf.flags.DEFINE_string("train_annot_dir", "./train_annot", "base directory for data")
 tf.flags.DEFINE_float("weight_decay", "0.0005", "weight decay for L2 regularization")
+tf.flags.DEFINE_float("init_stddev", "0.1", "stddev for initializer")
 
 slim = tf.contrib.slim
 
-def visualization(img, annots, anchor_infos, idx2obj, palette):
+def visualization(img, annots, anchor_infos, idx2obj, palette, option='draw_anchor'):
   print("visualization()")
   h, w = img.shape[:2]
 
@@ -62,14 +65,17 @@ def visualization(img, annots, anchor_infos, idx2obj, palette):
         offset = 0
         for j, anchor_scale in enumerate(anchor_scales):
           conf = annot[row, col, offset:offset + FLAGS.nclass]
-          if np.max(conf) > .5:
-            idx = int(1 + np.argmax(conf))
+          idx = int(np.argmax(conf))
+          if idx > 0 and np.max(conf) > 0.5:
+            print(idx, conf)
             _color = palette[idx]
             color = (int(_color[2]), int(_color[1]), int(_color[0]))
             name = idx2obj[idx]
 
             anchor_w, anchor_h = anchor_scale
             anchor_cx, anchor_cy = (col + .5)/w_num_grid, (row  + .5)/h_num_grid
+            anchor_cwh = ((anchor_cx, anchor_cy), (anchor_w, anchor_h))
+            anchor_bbox = improc.cvt_cwh2bbox(anchor_cwh)
 
             b = offset + FLAGS.nclass
             e = b + 4
@@ -92,8 +98,13 @@ def visualization(img, annots, anchor_infos, idx2obj, palette):
             b = (int(x1*w), int(y1*h))
             e = (int(x2*w), int(y2*h))
 
+            anchor_b = (int(anchor_bbox[0][0]*w), int(anchor_bbox[0][1]*h))
+            anchor_e = (int(anchor_bbox[1][0]*w), int(anchor_bbox[1][1]*h))
+
             #vis_grid= cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
             img = cv2.rectangle(img, b, e, color, 7)
+            if option == 'draw_anchor':
+              img = cv2.rectangle(img, anchor_b, anchor_e, (0, 0, 255), 3)
             img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
             img = cv2.circle(img, (int(cx*w), int(cy*h)), 4, color, -1)
 
@@ -102,13 +113,14 @@ def visualization(img, annots, anchor_infos, idx2obj, palette):
   return img
 
 def build_feed_annots(_feed_annots, anchor_infos):
+  print('build_feed_annots()')
   batch_size = len(_feed_annots)
 
   # scale and translation
   # input image is resized 537x537
   # we will choose random crop size and offset, and resize into 428x428
   # This is equivalent to resize ~20% and crop with the widnow of 428x428
-  scales = np.random.uniform(0.70, 1.0, [batch_size, 1])
+  scales = np.random.uniform(0.70, 0.90, [batch_size, 1])
   offsets = (1 - scales)*np.random.uniform(0.0, 1.0, [batch_size, 2])
   ends = offsets + scales
   feed_scaletrans = np.concatenate([offsets, ends], axis=1)
@@ -122,6 +134,10 @@ def build_feed_annots(_feed_annots, anchor_infos):
     box_dim = (FLAGS.nclass + 4)*len(anchor_scales)
 
     feed_annots = np.zeros((batch_size, h_num_grid, w_num_grid, box_dim), np.float32)
+
+    # fill all crid as blank
+    for i in range(len(anchor_scales)):
+      feed_annots[:, :, :, (FLAGS.nclass + 4)*i] = 1.0
 
     # build augmented annotations
     for i, _annot in enumerate(_feed_annots):
@@ -160,7 +176,7 @@ def build_feed_annots(_feed_annots, anchor_infos):
         x_loc, y_loc = int(cx*w_num_grid), int(cy*h_num_grid)
         idx = int(idx)
 
-        if x_loc < 0 or y_loc < 0 or x_loc >= FLAGS.num_grid or y_loc >= FLAGS.num_grid:
+        if x_loc < 0 or y_loc < 0 or x_loc >= w_num_grid or y_loc >= h_num_grid:
           continue
 
         offset = 0
@@ -170,9 +186,12 @@ def build_feed_annots(_feed_annots, anchor_infos):
           anchor_cwh = ((anchor_cx, anchor_cy), (anchor_w, anchor_h))
           # iou with the current anchor region is > 0.5
           anchor_bbox = improc.cvt_cwh2bbox(anchor_cwh)
+
           iou = improc.cal_iou(bbox, anchor_bbox)
-          if iou > 0.5:
-            feed_annots[i, y_loc, x_loc, offset + idx-1] = 1
+          if iou > FLAGS.iou_threshold:
+            class_array = np.zeros((FLAGS.nclass))
+            class_array[idx] = 1.0
+            feed_annots[i, y_loc, x_loc, offset:offset + FLAGS.nclass] = class_array
 
             b = offset + FLAGS.nclass
             e = b + 4
@@ -180,8 +199,12 @@ def build_feed_annots(_feed_annots, anchor_infos):
             reg_nw, reg_nh = np.log(nw/anchor_w), np.log(nh/anchor_h)
             feed_annots[i, y_loc, x_loc, b:e] = np.array((reg_cx, reg_cy, reg_nw, reg_nh), np.float32)
             if i == 0:
+              print('iou:', iou)
+              print('bbox:', bbox)
+              print('anchor_bbox:', anchor_bbox)
               print((anchor_w, anchor_h), iou)
               print('--------------------------------------')
+
 
           offset += (FLAGS.nclass + 4)
 
@@ -212,16 +235,26 @@ def init_anchor_scales(num_layers):
     scale_list.append(scales)
   return scale_list
 
+def base_conv2d(inputs, num_outputs, kernel_size, stride=1, padding='SAME', data_format='NCHW', scope=None):
+
+  out = slim.conv2d(inputs, num_outputs, kernel_size, stride=stride, padding=padding, data_format=data_format, activation_fn=None, normalizer_fn=None, scope=scope)
+  out = slim.batch_norm(out, activation_fn=tf.nn.relu, scope=scope+'_bn', is_training=True)
+
+  return out
+
 def model_ssd(frontend):
 
   with slim.arg_scope([slim.conv2d],
                       activation_fn=tf.nn.relu,
                       weights_regularizer=slim.l2_regularizer(FLAGS.weight_decay),
-                      biases_initializer=tf.zeros_initializer(),
+                      #biases_initializer=tf.zeros_initializer(),
                       data_format='NCHW'):
+    frontend = tf.Print(frontend, [frontend, tf.shape(frontend)[1:]], summarize=49, message="frontend:")
     # 10 x 10
     conv6_1 = slim.conv2d(frontend, 256, [1, 1], stride=1, padding='SAME', scope='conv6_1')
     conv6_2 = slim.conv2d(conv6_1, 512, [3, 3], stride=2, padding='SAME', scope='conv6_2')
+
+    conv6_2 = tf.Print(conv6_2, [conv6_2, tf.shape(conv6_2)[1:]], summarize=49, message="conv6_2:")
 
     # 5 x 5
     conv7_1 = slim.conv2d(conv6_2, 256, [1, 1], stride=1, padding='SAME', scope='conv7_1')
@@ -233,19 +266,25 @@ def model_ssd(frontend):
 
     # 1 x 1
     conv9_1 = slim.conv2d(conv8_2, 256, [1, 1], stride=1, padding='SAME', scope='conv9_1')
-    conv9_2 = slim.conv2d(conv9_1, 512, [3, 3], stride=2, padding='SAME', scope='conv9_2')
+    conv9_2 = slim.conv2d(conv9_1, 512, [3, 3], stride=2, padding='VALID', scope='conv9_2')
 
+    conv9_2 = tf.Print(conv9_2, [conv9_2, tf.shape(conv9_2)[1:]], summarize=49, message="conv9_2:")
   return conv6_2, conv7_2, conv8_2, conv9_2
 
 def model_backend(out_layers, anchor_scales_list):
 
   ret_layers = []
-  for i, (layer, anchor_scales) in enumerate(zip(out_layers, anchor_scales_list)):
-    out_size = (FLAGS.nclass + 4)*len(anchor_scales)
+  with slim.arg_scope([slim.conv2d],
+                      activation_fn=tf.nn.relu,
+                      weights_regularizer=slim.l2_regularizer(FLAGS.weight_decay),
+                      #biases_initializer=tf.zeros_initializer(),
+                      data_format='NCHW'):
+    for i, (layer, anchor_scales) in enumerate(zip(out_layers, anchor_scales_list)):
+      out_size = (FLAGS.nclass + 4)*len(anchor_scales)
 
-    _out = slim.conv2d(layer, out_size, [3, 3], stride=1, padding='SAME', data_format='NCHW', scope='backend{}'.format(i))
-    out = tf.transpose(_out, perm=[0, 2, 3, 1])
-    ret_layers.append(out)
+      _out = slim.conv2d(layer, out_size, [3, 3], stride=1, padding='SAME', data_format='NCHW', scope='backend{}'.format(i))
+      out = tf.transpose(_out, perm=[0, 2, 3, 1])
+      ret_layers.append(out)
 
   return ret_layers
 
@@ -272,9 +311,7 @@ def calculate_loss(ys, outs, anchor_scales_list):
     for j, anchor_scale in enumerate(anchor_scales):
       print("j:",j)
       class_y = y[:, :, :, offset:offset + FLAGS.nclass]
-      print(class_y)
       class_y = tf.reshape(class_y, shape=[FLAGS.batch_size, -1, FLAGS.nclass])
-      print(class_y)
 
       class_out = out[:, :, :, offset:offset + FLAGS.nclass]
       class_out = tf.reshape(class_out, shape=[FLAGS.batch_size, -1, FLAGS.nclass])
@@ -285,6 +322,7 @@ def calculate_loss(ys, outs, anchor_scales_list):
       coord_out = out[:, :, :, offset + FLAGS.nclass: offset + FLAGS.nclass + 4]
       coord_out = tf.reshape(coord_out, shape=[FLAGS.batch_size, -1, 4])
 
+      #class_out = tf.Print(class_out, [class_out, tf.shape(class_out)[1:]], summarize=200, message="class_out{}_{}:".format(i, j))
       flat_class_y.append(class_y)
       flat_class_out.append(class_out)
       flat_coord_y.append(coord_y)
@@ -293,7 +331,9 @@ def calculate_loss(ys, outs, anchor_scales_list):
       offset += (FLAGS.nclass + 4)
 
   flat_class_y = tf.concat(flat_class_y, axis=1)
+  flat_class_y = tf.Print(flat_class_y, [flat_class_y, tf.shape(flat_class_y)[1:]], summarize=200, message="flat_class_y:")
   flat_class_out = tf.concat(flat_class_out, axis=1)
+  flat_class_out = tf.Print(flat_class_out, [flat_class_out, tf.shape(flat_class_out)[1:]], summarize=200, message="flat_class_out:")
   flat_coord_y = tf.concat(flat_coord_y, axis=1)
   flat_coord_out = tf.concat(flat_coord_out, axis=1)
   print('flat_class_y', flat_class_y)
@@ -301,8 +341,11 @@ def calculate_loss(ys, outs, anchor_scales_list):
   print('flat_coord_y', flat_coord_y)
   print('flat_coord_out', flat_coord_out)
 
-  positive_mask = tf.reduce_max(flat_class_y, axis=2) > 0.5
-  negative_mask = tf.logical_not(positive_mask)
+  #positive_mask = tf.reduce_max(flat_class_y, axis=2) > 0.5
+  #negative_mask = tf.logical_not(positive_mask)
+
+  negative_mask = tf.cast(flat_class_y[:, :, 0], dtype=tf.bool)
+  positive_mask = tf.logical_not(negative_mask)
 
   positive_mask = tf.cast(positive_mask, dtype=tf.float32)
   positive_num  = tf.reduce_sum(positive_mask, axis=1)
@@ -315,26 +358,54 @@ def calculate_loss(ys, outs, anchor_scales_list):
   print('negative_num', negative_num)
 
   negative_num = tf.cast(tf.minimum(negative_num, positive_num*FLAGS.negative_ratio), dtype=tf.int32)
+  negative_num += 1 #dummy to prevent set k=zero in top_k
 
   conf_loss = tf.nn.softmax_cross_entropy_with_logits(logits=flat_class_out, labels=flat_class_y)
+ 
+  print('conf_loss:', conf_loss)
+  conf_loss = tf.Print(conf_loss, [conf_loss, tf.shape(conf_loss)[1:]], summarize=49, message="conf_loss:")
 
-  negative_loss = 0
+  positive_num = tf.Print(positive_num, [positive_num, tf.shape(positive_num)], summarize=49, message="positive_num:")
+  negative_num = tf.Print(negative_num, [negative_num, tf.shape(negative_num)], summarize=49, message="negative_num:")
+  negative_loss = []
   for i in range(FLAGS.batch_size):
+    # use minus for sort
     values, indices = tf.nn.top_k(-(conf_loss[i]*negative_mask[i]), k=negative_num[i])
-    negative_loss += tf.reduce_sum(values)
+    #values = tf.Print(values, [values, tf.shape(values)], summarize=49, message="values{}:".format(i))
+    # recover sign by minus
+    negative_loss.append(tf.reduce_sum(-values))
+  negative_loss = tf.stack(negative_loss)
 
-  negative_loss /= FLAGS.batch_size
+  negative_loss = tf.Print(negative_loss, [negative_loss, tf.shape(negative_loss)], summarize=49, message="negative_loss:")
+  #negative_loss /= FLAGS.batch_size
 
   loc_loss = smooth_l1_loss(flat_coord_out - flat_coord_y)
 
-  loss = tf.reduce_sum(conf_loss*positive_mask, axis=1)
-  #loss += tf.reduce_sum(values, axis=1)
-  loss += tf.reduce_sum(loc_loss, axis=[1, 2])
+  loss = 0.0
+
+  loss += tf.reduce_sum(conf_loss*positive_mask, axis=1)
+  loss = tf.Print(loss, [loss, tf.shape(loss)[1:]], summarize=49, message="lossA:")
+
+  loss += tf.reduce_sum(loc_loss*tf.expand_dims(positive_mask, axis=2), axis=[1, 2])
+  loss = tf.Print(loss, [loss, tf.shape(loss)[1:]], summarize=49, message="lossB:")
+  
+  loss += negative_loss
+  loss = tf.Print(loss, [loss, tf.shape(loss)[1:]], summarize=49, message="lossC:")
   print(loss)
 
+  positive_num += 1 #dummy to prevent divied by zero
   loss = tf.div(loss, positive_num)
+# code below is not working. it makes gradients nan
+#  cond = positive_num > 0.0
+#  cond = tf.Print(cond, [cond, tf.shape(cond)], summarize=49, message="cond:")
+#  a = tf.div(loss, positive_num)
+#  a = tf.Print(a, [a, tf.shape(a)], summarize=49, message="a:")
+#  b = tf.zeros_like(loss)
+#  b = tf.Print(b, [b, tf.shape(b)], summarize=49, message="b:")
+#  loss = tf.where(cond, a, b)
+  loss = tf.Print(loss, [loss, tf.shape(loss)[1:]], summarize=49, message="lossD:")
   print(loss)
-  loss = tf.reduce_mean(loss) + negative_loss
+  loss = tf.reduce_mean(loss)
   print(loss)
   return loss
 
@@ -364,11 +435,11 @@ def get_opt(loss, scope):
 #  learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
 #                                                 1, 0.998, staircase=True)
   learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
-#  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
-  lr_decay_op1 = learning_rate.assign(1e-4)
-  lr_decay_op2 = learning_rate.assign(1e-5)
-  optimizer = tf.train.MomentumOptimizer(learning_rate, FLAGS.momentum)
-#  optimizer = tf.train.AdamOptimizer(learning_rate)
+  lr_decay_op1 = tf.assign(learning_rate, 1e-4)
+  lr_decay_op2 = tf.assign(learning_rate, 1e-5)
+  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+#  optimizer = tf.train.MomentumOptimizer(FLAGS.learning_rate, FLAGS.momentum)
+  optimizer = tf.train.AdamOptimizer(learning_rate)
   opt = optimizer.minimize(loss, var_list=var_list, global_step=global_step)
 
 #  learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
@@ -447,7 +518,7 @@ def main(args):
       layers = model_ssd(vgg_outs)
 
     out_layers.extend(layers)
-
+    print('layers', layers)
 
     anchor_scales_list = init_anchor_scales(len(out_layers))
     with tf.variable_scope('ssd') as scope:
@@ -457,11 +528,7 @@ def main(args):
     print(list(anchor_infos))
     print("1. network setup is done.")
 
-    print('regularization:', tf.losses.get_regularization_loss(scope='ssd'))
-    print('layers', layers)
 
-    regularization_loss = tf.losses.get_regularization_loss(scope='ssd')
-    tf.losses.add_loss(regularization_loss)
 
     _y = []
     for layer, anchor_scale in anchor_infos:
@@ -472,16 +539,15 @@ def main(args):
     print("2. label setup is done.")
 
     loss = calculate_loss(_y, out_layers, anchor_scales_list)
-    tf.losses.add_loss(loss)
-    total_loss = tf.losses.get_total_loss()
-    print('get_loss', tf.losses.get_losses())
+    regularization_loss = tf.losses.get_regularization_loss(scope='ssd')
+    total_loss = loss + regularization_loss
     print("3. loss setup is done.")
 
     var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
     print("==get_opt()============================")
     for item in var_list:
       print(item.name)
-    opt = get_opt(total_loss, 'ssd')
+    opt, lr_decay_op1, lr_decay_op2 = get_opt(total_loss, 'ssd')
     print("4. optimizer setup is done.")
 
     epoch_step, epoch_update = utils.get_epoch()
@@ -522,7 +588,10 @@ def main(args):
           print("[{}] {}/{}".format(epoch_val, itr, max_itr))
 
           # build minibatch
-          _batch = filelist[itr:itr + FLAGS.batch_size]
+          b = itr*FLAGS.batch_size
+          e = b + FLAGS.batch_size
+          _batch = filelist[b:e]
+          print(_batch)
 
           feed_imgs = utils.load_imgs(FLAGS.train_img_dir, _batch)
           _feed_annots = utils.load_annots(FLAGS.train_annot_dir, _batch)
@@ -532,21 +601,30 @@ def main(args):
           assert len(list(anchor_infos)) == len(feed_annots_list), "anchor_infos and feed_annots_list should have same length"
 
           feed_dict = {_x: feed_imgs, _st: feed_scaletrans, _flip: feed_flips, drop_prob:0.5}
-          print(_y)
-          print("------------------------------------------------------")
+#          print(_y)
           for ph, feed_annots in zip(_y, feed_annots_list):
 
-            print(ph)
-            print(feed_annots.shape)
+#            print("------------------------------------------------------")
+#            print(ph)
+#            print(feed_annots.shape)
             feed_dict[ph] = feed_annots
+          test = tf.get_default_graph().get_tensor_by_name("ssd/backend0/weights:0")
+          test = tf.get_default_graph().get_tensor_by_name("ssd/backend0/biases:0")
 
-          print("------------------------------------------------------")
+          print("test before:", test.eval())
+          var_grad = tf.gradients(loss, [test])[0]
+          var_grad_val = sess.run([var_grad], feed_dict=feed_dict)
+          print("test var_grad:", np.sum(var_grad_val))
+          print("test var_grad:", var_grad_val)
+          _, total_loss_val, loss_val, regularization_loss_val = sess.run([opt, total_loss, loss, regularization_loss], feed_dict=feed_dict)
+          print("test after:", test.eval())
 
-          _, _ = sess.run([opt, total_loss], feed_dict=feed_dict)
-          if itr % 100 == 0:
+          print("total_loss: {}".format(total_loss_val))
+          print("loss: {}, regularization_loss: {}".format(loss_val, regularization_loss_val))
+          if itr % 1 == 0:
             data_val, aug_val = sess.run([_x, aug], feed_dict=feed_dict)
             label_val = sess.run(_y, feed_dict=feed_dict)
-            out_val = sess.run(_y, feed_dict=feed_dict)
+            out_val = sess.run(out_layers, feed_dict=feed_dict)
             orig_img = cv2.cvtColor(data_val[0],cv2.COLOR_RGB2BGR)
             # crop region
             cr = feed_scaletrans[0]*FLAGS.img_orig_size
@@ -563,10 +641,10 @@ def main(args):
 
             out_val = [out[0] for out in out_val]
             out_img = cv2.resize(out_img, (FLAGS.img_vis_size, FLAGS.img_vis_size))
-            out_img = visualization(out_img, out_val, anchor_infos, idx2obj, palette)
+            out_img = visualization(out_img, out_val, anchor_infos, idx2obj, palette, option=None)
             cv2.imshow('input', improc.img_listup([orig_img, aug_img, out_img]))
 
-          key = cv2.waitKey(5)
+          key = cv2.waitKey(0)
           if key == 27:
             sys.exit()
 
