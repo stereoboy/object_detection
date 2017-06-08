@@ -47,7 +47,7 @@ tf.flags.DEFINE_float("weight_decay", "0.0005", "weight decay for L2 regularizat
 
 slim = tf.contrib.slim
 
-def visualization(img, annot, anchor_scales, idx2obj, palette):
+def visualization(img, annot, anchor_scales, idx2obj, palette, option='draw_anchor'):
   print("visualization()")
   h, w = [float(x) for x in img.shape[:2]]
 
@@ -68,6 +68,8 @@ def visualization(img, annot, anchor_scales, idx2obj, palette):
 
           anchor_w, anchor_h = anchor_scale
           anchor_cx, anchor_cy = (col + .5), (row  + .5)
+          anchor_cwh = ((anchor_cx, anchor_cy), (anchor_w, anchor_h))
+          anchor_bbox = improc.cvt_cwh2bbox(anchor_cwh)
 
           b = offset + FLAGS.nclass
           e = b + 1 + 4
@@ -91,8 +93,13 @@ def visualization(img, annot, anchor_scales, idx2obj, palette):
           b = (int(x1*w_grid), int(y1*h_grid))
           e = (int(x2*w_grid), int(y2*h_grid))
 
+          anchor_b = (int(anchor_bbox[0][0]*w_grid), int(anchor_bbox[0][1]*h_grid))
+          anchor_e = (int(anchor_bbox[1][0]*w_grid), int(anchor_bbox[1][1]*h_grid))
+
           #vis_grid= cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
           img = cv2.rectangle(img, b, e, color, 5)
+          if option == 'draw_anchor':
+            img = cv2.rectangle(img, anchor_b, anchor_e, (0, 0, 255), 3)
           img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
           img = cv2.circle(img, (int(cx*w_grid), int(cy*h_grid)), 4, color, -1)
 
@@ -106,7 +113,7 @@ def leaky_relu(tensor):
 def base_conv2d(inputs, num_outputs, kernel_size, stride=1, padding='SAME', data_format='NCHW', scope=None):
 
   out = slim.conv2d(inputs, num_outputs, kernel_size, stride=stride, padding=padding, data_format=data_format, activation_fn=None, normalizer_fn=None, scope=scope)
-  out = slim.batch_norm(out, activation_fn=leaky_relu, scope='bn_' + scope)
+  out = slim.batch_norm(out, activation_fn=leaky_relu, scope=scope+'_bn')
 
   return out
 
@@ -208,6 +215,7 @@ def model_yolov2_backend(_out0, _out1, anchor_scales):
   assert _out0.get_shape()[-1] == 2*FLAGS.num_grid, "_out0 should be 13*2=26"
   assert _out1.get_shape()[-1] == FLAGS.num_grid, "_out1 should be 13"
 
+  # subpixel cnn layer
   # re-orgarnize from large image to small image
   # 2x2x1 -> 1x1x4
   def reorganize(x):
@@ -257,7 +265,7 @@ def calculate_loss(y, out, anchor_scales):
   confi_term  = 0
 
   out_post = []
-  for i in range(anchor_scales):
+  for i, anchor_scale in enumerate(anchor_scales):
     offset = i*(FLAGS.nclass + 1 + 4)
     yClass = y[:, :, :, offset:offset + FLAGS.nclass]
     Class  = out[:, :, :, offset:offset + FLAGS.nclass]
@@ -271,9 +279,11 @@ def calculate_loss(y, out, anchor_scales):
     sqrtWH  = out[:, :, :, offset + 3:offset + 5]
     WH      = tf.square(sqrtWH)
 
-    Area = WH[:,:,:,0]*WH[:,:,:,1]
+    yTopLeft = yXY - 0.5*yWH
+    yBotRight = yXY + 0.5*yWH
     TopLeft = XY - 0.5*WH
     BotRight = XY + 0.5*WH
+    Area = WH[:,:,:,0]*WH[:,:,:,1]
 
     interTopLeft = tf.maximum(yTopLeft, TopLeft)
     interBotRight = tf.minimum(yBotRight, BotRight)
@@ -306,8 +316,8 @@ def main(args):
 
   # this is from yolo-voc.cfg in darknet source code
   # 1.0 means individual grid cell width
-  #anchor_scales =  [(1.3221, 1.73145), (3.19275, 4.00944), (5.05587, 8.09892), (9.47112, 4.84053), (11.2364, 10.0071)]
-  anchor_scales =  [(1.3221, 1.73145)]
+  anchor_scales =  [(1.3221, 1.73145), (3.19275, 4.00944), (5.05587, 8.09892), (9.47112, 4.84053), (11.2364, 10.0071)]
+  #anchor_scales =  [(1.3221, 1.73145)]
 
   with tf.Graph().as_default():
     mean = tf.constant(np.array((_R_MEAN, _G_MEAN, _B_MEAN), dtype=np.float32))
@@ -347,7 +357,7 @@ def main(args):
     #tf.losses.add_loss(regularization_loss)
 
     out = tf.transpose(_out, perm=[0, 2, 3, 1])
-    loss = calculate_loss(_y, out)
+    loss = calculate_loss(_y, out, anchor_scales)
     print(loss)
     tf.losses.add_loss(loss)
     total_loss = tf.losses.get_total_loss(add_regularization_losses=False)
@@ -426,7 +436,9 @@ def main(args):
           print("[{}] {}/{}".format(epoch_val, itr, max_itr))
 
           # build minibatch
-          _batch = filelist[itr:itr + FLAGS.batch_size]
+          b = itr*FLAGS.batch_size
+          e = b + FLAGS.batch_size
+          _batch = filelist[b:e]
 
           feed_imgs = utils.load_imgs(FLAGS.train_img_dir, _batch)
           _feed_annots = utils.load_annots(FLAGS.train_annot_dir, _batch)
@@ -456,7 +468,7 @@ def main(args):
             aug_img = visualization(aug_img, label_val[0], anchor_scales, idx2obj, palette)
 
             out_img = cv2.resize(out_img, (FLAGS.img_vis_size, FLAGS.img_vis_size))
-            out_img = visualization(out_img, out_val[0], anchor_scales, idx2obj, palette)
+            out_img = visualization(out_img, out_val[0], anchor_scales, idx2obj, palette, option=None)
             cv2.imshow('input', improc.img_listup([orig_img, aug_img, out_img]))
 
           key = cv2.waitKey(0)
