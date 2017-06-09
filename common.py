@@ -5,97 +5,6 @@ import xmltodict
 import cv2
 from PIL import Image
 
-idx2obj = [
-  'blank',
-	'aeroplane',
-	'bicycle',
-	'bird',
-	'boat',
-	'bottle',
-	'bus',
-	'car',
-	'cat',
-	'chair',
-	'cow',
-	'diningtable',
-	'dog',
-	'horse',
-	'motorbike',
-	'person',
-	'pottedplant',
-	'sheep',
-	'sofa',
-	'train',
-	'tvmonitor',
-]
-
-def build_obj2idx(idx2obj):
-  obj2idx = dict()
-  for obj in idx2obj:
-    obj2idx[obj] = len(obj2idx)
-
-  for k, v in obj2idx.items():
-    print(k, v)
-  return obj2idx
-
-def build_colormap_lookup(N):
-
-  colormap = {}
-  palette = np.zeros((N, 3), np.uint8)
-
-  for i in range(0, N):
-    ID = i
-    r = 0
-    g = 0
-    b = 0
-    for j in range(0, 8):
-      r = r | (((ID&0x1)>>0) <<(7-j))
-      g = g | (((ID&0x2)>>1) <<(7-j))
-      b = b | (((ID&0x4)>>2) <<(7-j))
-      ID = ID >> 3
-
-    colormap[(r,g,b)] = i
-    palette[i, 0] = r
-    palette[i, 1] = g
-    palette[i, 2] = b
-
-  palette = np.array(palette, np.uint8).reshape(-1, 3)
-  global hidden_palette
-  hidden_palette = palette
-  return colormap, palette
-
-def maybe_download(directory, filename, url):
-  print('Try to dwnloaded', url)
-  if not tf.gfile.Exists(directory):
-    tf.gfile.MakeDirs(directory)
-  filepath = os.path.join(directory, filename)
-  if not tf.gfile.Exists(filepath):
-    filepath, _ = urllib.request.urlretrieve(url, filepath)
-    with tf.gfile.GFile(filepath) as f:
-      size = f.size()
-    print('Successfully downloaded', filename, size, 'bytes.')
-  return filepath
-
-def load_pretrained(filepath):
-  return np.load(filepath, encoding='bytes').item()
-
-def img_listup(imgs):
-  size = len(imgs)
-  (h, w) = imgs[0].shape[:2]
-
-  total_w = 0
-  for img in imgs:
-    total_w += img.shape[1]
-  out = np.zeros((h, total_w, 3), np.uint8)
-
-  offset = 0
-  for i in range(size):
-    h, w = imgs[i].shape[:2]
-    out[:h, offset: offset + w] = imgs[i]
-    offset += w
-
-  return out
-
 class DataCenter(object):
   def nextPair(self):
     raise NotImplementedError
@@ -191,39 +100,6 @@ def cal_rel_coord(w, h, x1, x2, y1, y2, w_grid, h_grid):
 
   return (int(x_loc),int( y_loc)), (cx, cy, nw, nh)
 
-
-def visualization(img, _annot, num_grid, palette):
-  print("visualization()")
-  h, w = img.shape[:2]
-  grid_size = float(h)/num_grid
-
-  w_grid, h_grid = (w/num_grid, h/num_grid)
-  _w, _h = _annot[0, :2]
-  scale_w, scale_h = float(w)/_w, float(h)/_h
-  for box in _annot[1:]:
-    idx, x1, x2, y1, y2 = box
-    idx = int(idx)
-    _color = palette[idx]
-    color = (int(_color[2]), int(_color[1]), int(_color[0]))
-
-    name = idx2obj[idx]
-
-    cx, cy = (scale_w*(x1 + x2)/2.0, scale_h*(y1 + y2)/2.0)
-    x_loc = cx//w_grid
-    y_loc = cy//h_grid
-
-    grid_b = (int(grid_size*x_loc), int(grid_size*y_loc))
-    grid_e = (int(grid_size*(x_loc+1)), int(grid_size*(y_loc+1)))
-
-    b = (int(scale_w*x1), int(scale_h*y1))
-    e = (int(scale_w*x2), int(scale_h*y2))
-    #img = cv2.rectangle(img, grid_b, grid_e, color, -1)
-    img = cv2.rectangle(img, b, e, color, 5)
-    img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
-    img = cv2.circle(img, (int(cx), int(cy)), 4, color, -1)
-
-  return img
-
 def logit(x):
   return np.log(x) - np.log(1 - x)
 
@@ -232,5 +108,9 @@ def sigmoid(x):
 
 def softmax(x):
   """Compute softmax values for each sets of scores in x."""
-  e_x = np.exp(x - np.max(x))
+  #e_x = np.exp(x - np.max(x))
+  e_x = np.exp(x)
   return e_x / e_x.sum()
+
+def clip(x, min_val, max_val):
+  return max(min_val, min(max_val, x))

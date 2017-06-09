@@ -3,6 +3,21 @@ import numpy as np
 from PIL import Image
 import os
 
+def maybe_download(directory, filename, url):
+  print('Try to dwnloaded', url)
+  if not tf.gfile.Exists(directory):
+    tf.gfile.MakeDirs(directory)
+  filepath = os.path.join(directory, filename)
+  if not tf.gfile.Exists(filepath):
+    filepath, _ = urllib.request.urlretrieve(url, filepath)
+    with tf.gfile.GFile(filepath) as f:
+      size = f.size()
+    print('Successfully downloaded', filename, size, 'bytes.')
+  return filepath
+
+def load_pretrained(filepath):
+  return np.load(filepath, encoding='bytes').item()
+
 def get_epoch():
   epoch_step = tf.Variable(0, name='epoch_step', trainable=False)
   epoch_update = epoch_step.assign(epoch_step + 1)

@@ -8,7 +8,9 @@ from datetime import datetime, date, time
 import cv2
 import sys
 import getopt
+import utils
 import common
+import voc
 import vgg_16
 import random
 from PIL import Image
@@ -24,7 +26,9 @@ tf.flags.DEFINE_integer("B", "2", "number of Bound Box in grid cell")
 tf.flags.DEFINE_integer("num_grid", "7", "number of grids vertically, horizontally")
 tf.flags.DEFINE_integer("nclass", "20", "class num")
 tf.flags.DEFINE_float("confidence", "0.1", "confidence limit")
-tf.flags.DEFINE_float("learning_rate", "1e-5", "Learning rate for Adam Optimizer")
+tf.flags.DEFINE_float("learning_rate0", "1e-5", "initial learning rate")
+tf.flags.DEFINE_float("learning_rate1", "1e-6", "learning rate for epoch 60")
+tf.flags.DEFINE_float("learning_rate2", "1e-7", "learning rate for epoch 90")
 tf.flags.DEFINE_float("momentum", "0.9", "momentum for Momentum Optimizer")
 tf.flags.DEFINE_float("eps", "1e-5", "epsilon for various operation")
 tf.flags.DEFINE_float("beta1", "0.5", "beta1 for Adam optimizer")
@@ -53,8 +57,8 @@ def load_imgs(filelist):
   imgs = [load_img(_img) for _img in _imgs]
   return imgs
 
-def visualization2(img, annot, palette, out=False):
-  print("visualization2()")
+def visualization(img, annot, palette, out=False):
+  print("visualization()")
   h, w = img.shape[:2]
 
   num_grid = annot.shape[0]
@@ -69,7 +73,7 @@ def visualization2(img, annot, palette, out=False):
       idx = int(1 + np.argmax(annot[row, col, :FLAGS.nclass]))
       _color = palette[idx]
       color = (int(_color[2]), int(_color[1]), int(_color[0]))
-      name = common.idx2obj[idx]
+      name = voc.idx2obj[idx]
       for k in range(FLAGS.B):
         b = FLAGS.nclass + k*(1 + 4)
         e = b + (1 + 4)
@@ -91,8 +95,8 @@ def visualization2(img, annot, palette, out=False):
           grid_b = (int(grid_size*x_loc), int(grid_size*y_loc))
           grid_e = (int(grid_size*(x_loc+1)), int(grid_size*(y_loc+1)))
 
-          b = (int(cx - 0.5*bw), int(cy - 0.5*bh))
-          e = (int(cx + 0.5*bw), int(cy + 0.5*bh))
+          b = (int(common.clip((cx - 0.5*bw), 0.0, FLAGS.img_size)), int(common.clip((cy - 0.5*bh), 0.0, FLAGS.img_size)))
+          e = (int(common.clip((cx + 0.5*bw), 0.0, FLAGS.img_size)), int(common.clip((cy + 0.5*bh), 0.0, FLAGS.img_size)))
 
           #print(b, e)
 
@@ -114,13 +118,13 @@ def compare(annot, out_annot):
   for i in range(num_grid):
     pred_name = []
     for j in range(num_grid):
-      pred_name.append(common.idx2obj[pred_class[i, j]])
+      pred_name.append(voc.idx2obj[pred_class[i, j]])
     print(pred_name)
 
   for row in range(num_grid):
     for col in range(num_grid):
       idx = int(1 + np.argmax(annot[row, col, :FLAGS.nclass]))
-      name = common.idx2obj[idx]
+      name = voc.idx2obj[idx]
 
       for k in range(FLAGS.B):
         b = FLAGS.nclass + k*(1 + 4)
@@ -130,8 +134,8 @@ def compare(annot, out_annot):
         if c > FLAGS.confidence:
           #out_idx = int(1 + np.argmax(out_annot[row, col, :FLAGS.nclass]))
           out_idx = (np.argsort(out_annot[row, col, :FLAGS.nclass])[-5:][::-1] + 1)
-          #out_name = common.idx2obj[out_idx]
-          out_name = [ common.idx2obj[i] for i in out_idx]
+          #out_name = voc.idx2obj[out_idx]
+          out_name = [ voc.idx2obj[i] for i in out_idx]
           out_name_check = (out_idx == idx)
           out_c, out_cx, out_cy, out_nw, out_nh = out_annot[row, col, b:e]
 
@@ -210,13 +214,17 @@ def build_feed_annots(_feed_annots):
       idx = int(idx)
       (x_loc, y_loc), (cx, cy, nw, nh) = common.cal_rel_coord(w, h, x1, x2, y1, y2, w_grid, h_grid)
 
+      if x_loc < 0 or y_loc < 0 or x_loc >= FLAGS.num_grid or y_loc >= FLAGS.num_grid:
+        continue
+      if nw < 0 or nh < 0:
+        continue
+
       # if object is still on cropped region
-      if x_loc >= 0 and x_loc < FLAGS.num_grid and y_loc >= 0 and y_loc < FLAGS.num_grid:
-        if not (x_loc, y_loc) in _annot_data.keys():
-          _annot_data[(x_loc, y_loc)] = (idx, [])
-          _annot_data[(x_loc, y_loc)][1].append((1.0, cx, cy, nw, nh))
-        elif _annot_data[(x_loc, y_loc)][0] == idx:
-          _annot_data[(x_loc, y_loc)][1].append((1.0, cx, cy, nw, nh))
+      if not (x_loc, y_loc) in _annot_data.keys():
+        _annot_data[(x_loc, y_loc)] = (idx, [])
+        _annot_data[(x_loc, y_loc)][1].append((1.0, cx, cy, nw, nh))
+      elif _annot_data[(x_loc, y_loc)][0] == idx:
+        _annot_data[(x_loc, y_loc)][1].append((1.0, cx, cy, nw, nh))
 
     for (x_loc, y_loc), (idx, bbs)  in _annot_data.items():
       #print (x_loc, y_loc, idx, bbs)
@@ -271,7 +279,9 @@ def build_feed_annots(_feed_annots):
 
 def init_YOLOBE():
   def init_with_normal():
-    return tf.truncated_normal_initializer(mean=0.0, stddev=0.02)
+
+    return tf.contrib.layers.xavier_initializer()
+    #return tf.truncated_normal_initializer(mean=0.0, stddev=0.02)
 
   WEs = {
       # step 5
@@ -417,18 +427,19 @@ def get_opt(loss, scope):
 #      staircase=True)
   # Use simple momentum for the optimization.
 
-  learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
-                                                 1, 0.998, staircase=True)
+#  learning_rate = tf.train.exponential_decay(FLAGS.learning_rate0, global_step,
+#                                                 1, 0.998, staircase=True)
+  learning_rate = tf.Variable(FLAGS.learning_rate0, trainable=False)
+  lr_decay_op1 = tf.assign(learning_rate, FLAGS.learning_rate1)
+  lr_decay_op2 = tf.assign(learning_rate, FLAGS.learning_rate2)
   learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
-  lr_decay_op1 = tf.assign(learning_rate, 1e-3)
-  lr_decay_op2 = tf.assign(learning_rate, 1e-4)
   optimizer = tf.train.MomentumOptimizer(learning_rate,
                                          FLAGS.momentum).minimize(loss,
                                                        var_list=var_list,
                                                        global_step=global_step)
-  learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
-  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
-  optimizer = tf.train.AdamOptimizer(learning_rate).minimize(loss, var_list=var_list)
+#  learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
+#  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+#  optimizer = tf.train.AdamOptimizer(learning_rate).minimize(loss, var_list=var_list)
 #
 #  learning_rate = tf.Variable(
 #      float(1e-3), trainable=False, dtype=tf.float32)
@@ -475,7 +486,7 @@ def calculate_loss(y, out):
   IOUs = []
   for i in range(FLAGS.B):
     offset = i*5
-    C = BBs[:, :, :, offset:offset + 1]
+    Conf = BBs[:, :, :, offset:offset + 1]
     XY = BBs[:, :, :, offset + 1:offset +3]
     sqrtWH  = BBs[:, :, :, offset + 3:offset + 5]
     WH = tf.square(sqrtWH)
@@ -511,7 +522,7 @@ def calculate_loss(y, out):
     WH = tf.square(sqrtWH)
 
     #Score = best_iou[:, :, :, i:i + 1]*C
-    Cdiff = tf.square(Obj - C)
+    ConfDiff = tf.square(Obj - C)
 
     t0 = lambda_coord*tf.reduce_sum(Obj*tf.square(yXY - XY), axis=[1,2,3])
 #    t0 = tf.Print(t0, [t0, tf.shape(t0)[1:]], summarize=49, message="[{}] t0:".format(i))
@@ -519,17 +530,17 @@ def calculate_loss(y, out):
     t1 = lambda_coord*tf.reduce_sum(Obj*tf.square(tf.sqrt(yWH) - sqrtWH), axis=[1,2,3])
 #    t1 = tf.Print(t1, [t1, tf.shape(t1)[1:]], summarize=49, message="[{}] t1:".format(i))
 
-    t2 = tf.reduce_sum(Obj*Cdiff, axis=[1,2,3])
+    t2 = tf.reduce_sum(Obj*ConfDiff, axis=[1,2,3])
 #    t2 = tf.Print(t2, [t2, tf.shape(t2)[1:]], summarize=49, message="[{}] t2".format(i))
 
-    t3 = lambda_noobj*tf.reduce_sum((1 - Obj)*Cdiff, axis=[1,2,3])
+    t3 = lambda_noobj*tf.reduce_sum((1 - Obj)*ConfDiff, axis=[1,2,3])
 #    t3 = tf.Print(t3, [t3, tf.shape(t3)[1:]], summarize=49, message="[{}] t3:".format(i))
 
     coord_term += t0 + t1
     confi_term += t2 + t3
     #coord_term += tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=C, labels=yC))
 
-    out_post.extend([C, XY, WH])
+    out_post.extend([Conf, XY, WH])
 
   out_post = tf.concat(out_post, axis=3)
 
@@ -574,7 +585,8 @@ def evaluate(sess, filelist, x, y, out, accuracy):
 
 def main(args):
 
-  colormap, palette = common.build_colormap_lookup(21)
+  colormap, palette = voc.build_colormap_lookup(21)
+  idx2obj = voc.idx2obj
   cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4) # 2x(confidence + (x, y, w, h)) + class
 
   #pool = mp.Pool(processes=6)
@@ -588,7 +600,7 @@ def main(args):
   if not os.path.exists(FLAGS.save_dir):
     os.makedirs(FLAGS.save_dir)
 
-  pretrained = common.load_pretrained("./VGG_16.npy")
+  pretrained = utils.load_pretrained("./VGG_16.npy")
 
   with open(FLAGS.filelist, "r") as f:
     filelist = json.load(f)
@@ -681,6 +693,13 @@ def main(args):
 
         feed_dict = {_x: feed_imgs, _y: feed_annots, _st: feed_scaletrans, _flip: feed_flips, drop_prob:0.5}
 
+        test = tf.get_default_graph().get_tensor_by_name("YOLO/e_conv_17:0")
+
+        print("test before:", test.eval())
+        var_grad = tf.gradients(loss, [test])[0]
+        var_grad_val = sess.run([var_grad], feed_dict=feed_dict)
+        print("test var_grad:", np.sum(var_grad_val))
+        print("test var_grad:", var_grad_val)
         _, loss_val = sess.run([opt, loss, ], feed_dict=feed_dict)
 
         #print("test: {}".format(sess.run(test, feed_dict=feed_dict)))
@@ -688,26 +707,28 @@ def main(args):
         current = datetime.now()
         print('\telapsed:' + str(current - start))
 
-        if itr % 100 == 0:
+        print("test after:", test.eval())
+
+        if itr % 1 == 0:
           data_val, aug_val, label_val, out_val = sess.run([_x, aug, _y, out_post], feed_dict=feed_dict)
           orig_img = cv2.cvtColor(data_val[0],cv2.COLOR_RGB2BGR)
           # crop region
           cr = feed_scaletrans[0]*FLAGS.img_orig_size
           cr = cr.astype(np.int)
-          orig_img = common.visualization(orig_img, _feed_annots[0], FLAGS.num_grid, palette )
+          orig_img = improc.visualization_orig(orig_img, _feed_annots[0], idx2obj, palette)
           orig_img = cv2.rectangle(orig_img, (cr[1], cr[0]), (cr[3], cr[2]), (255,255,255), 2)
           orig_img = cv2.resize(orig_img, (FLAGS.img_size, FLAGS.img_size))
 
           aug_img = cv2.cvtColor(aug_val[0], cv2.COLOR_RGB2BGR)
           out_img = aug_img.copy()
-          aug_img = visualization2(aug_img, feed_annots[0], palette)
+          aug_img = visualization(aug_img, feed_annots[0], palette)
 
-          out_img = visualization2(out_img, out_val[0], palette, True)
-          cv2.imshow('input', common.img_listup([orig_img, aug_img, out_img]))
+          out_img = visualization(out_img, out_val[0], palette, True)
+          cv2.imshow('input', improc.img_listup([orig_img, aug_img, out_img]))
 
           compare(feed_annots[0], out_val[0])
 
-        key = cv2.waitKey(5)
+        key = cv2.waitKey(0)
         if key == 27:
           sys.exit()
       print("#######################################################")
