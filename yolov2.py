@@ -26,7 +26,9 @@ tf.flags.DEFINE_integer("num_out_layer", "2", "number of output layers")
 tf.flags.DEFINE_integer("num_grid", "13", "number of grids vertically, horizontally")
 tf.flags.DEFINE_integer("nclass", "20", "class num")
 tf.flags.DEFINE_float("confidence", "0.1", "confidence limit")
-tf.flags.DEFINE_float("learning_rate", "1e-5", "Learning rate for Adam Optimizer")
+tf.flags.DEFINE_float("learning_rate0", "1e-3", "initial learning rate")
+tf.flags.DEFINE_float("learning_rate1", "1e-4", "learning rate for epoch 60")
+tf.flags.DEFINE_float("learning_rate2", "1e-5", "learning rate for epoch 90")
 tf.flags.DEFINE_float("momentum", "0.9", "momentum for Momentum Optimizer")
 tf.flags.DEFINE_float("eps", "1e-5", "epsilon for various operation")
 tf.flags.DEFINE_float("beta1", "0.5", "beta1 for Adam optimizer")
@@ -47,7 +49,7 @@ tf.flags.DEFINE_float("weight_decay", "0.0005", "weight decay for L2 regularizat
 
 slim = tf.contrib.slim
 
-def visualization(img, annot, anchor_scales, idx2obj, palette, option='draw_anchor'):
+def visualization(img, annot, anchor_scales, idx2obj, palette, options=['draw_anchor', 'target']):
   print("visualization()")
   h, w = [float(x) for x in img.shape[:2]]
 
@@ -59,9 +61,10 @@ def visualization(img, annot, anchor_scales, idx2obj, palette, option='draw_anch
     for col in range(w_num_grid):
       offset = 0
       for i, anchor_scale in enumerate(anchor_scales):
-        conf = annot[row, col, offset:offset + FLAGS.nclass]
-        if np.max(conf) > .5:
-          idx = int(1 + np.argmax(conf))
+        class_pred = annot[row, col, offset:offset + FLAGS.nclass]
+        obj_conf = annot[row, col, offset + FLAGS.nclass]
+        if np.max(class_pred) > .5:
+          idx = int(1 + np.argmax(class_pred))
           _color = palette[idx]
           color = (int(_color[2]), int(_color[1]), int(_color[0]))
           name = idx2obj[idx]
@@ -75,7 +78,7 @@ def visualization(img, annot, anchor_scales, idx2obj, palette, option='draw_anch
           e = b + 1 + 4
           iou, reg_cx, reg_cy, reg_nw, reg_nh = annot[row, col, b:e]
 
-          cx, cy = reg_cx + anchor_cx, reg_cy + anchor_cy
+          cx, cy = col + reg_cx, row + reg_cy
           nw, nh = np.exp(reg_nw)*anchor_w, np.exp(reg_nh)*anchor_h
 
           cwh = ((cx, cy), (nw, nh))
@@ -84,7 +87,7 @@ def visualization(img, annot, anchor_scales, idx2obj, palette, option='draw_anch
           print(reg_cx, reg_cy, reg_nw, reg_nh)
           print('--------------------------------------')
           ((x1, y1), (x2, y2)) = improc.cvt_cwh2bbox(cwh)
-          name = name + '_%d'%(i) + '_%.2f'%(np.max(conf))
+          name = name + '_%d'%(i) + '_%.2f'%(np.max(class_pred))
 
 #          print("{} is located at ({}, {})".format(name, row, col))
 #          print("WxH at {}x{}".format(bw, bh))
@@ -97,9 +100,9 @@ def visualization(img, annot, anchor_scales, idx2obj, palette, option='draw_anch
           anchor_e = (int(anchor_bbox[1][0]*w_grid), int(anchor_bbox[1][1]*h_grid))
 
           #vis_grid= cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
-          img = cv2.rectangle(img, b, e, color, 5)
-          if option == 'draw_anchor':
+          if 'draw_anchor' in options:
             img = cv2.rectangle(img, anchor_b, anchor_e, (0, 0, 255), 3)
+          img = cv2.rectangle(img, b, e, color, 5)
           img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
           img = cv2.circle(img, (int(cx*w_grid), int(cy*h_grid)), 4, color, -1)
 
@@ -179,6 +182,8 @@ def build_feed_annots(_feed_annots, anchor_scales):
 
       if x_loc < 0 or y_loc < 0 or x_loc >= FLAGS.num_grid or y_loc >= FLAGS.num_grid:
         continue
+      if nw < 0 or nh < 0:
+        continue
 
       idx = int(idx)
 
@@ -196,10 +201,12 @@ def build_feed_annots(_feed_annots, anchor_scales):
 
         b = offset + FLAGS.nclass
         e = b + 1 + 4
-        reg_cx, reg_cy = (cx - anchor_cx), (cy - anchor_cy)
+        reg_cx, reg_cy = (cx - x_loc), (cy - y_loc)
         reg_nw, reg_nh = np.log(nw/anchor_w), np.log(nh/anchor_h)
-        feed_annots[i, y_loc, x_loc, b:e] = np.array((iou, reg_cx, reg_cy, reg_nw, reg_nh), np.float32)
+        feed_annots[i, y_loc, x_loc, b:e] = np.array((1.0, reg_cx, reg_cy, reg_nw, reg_nh), np.float32)
         if i == 0:
+          print(feed_annots[i, y_loc, x_loc, b:e])
+          print(nw/anchor_w, nh/anchor_h)
           cwh = ((cx, cy), (nw, nh))
           print(cwh)
           print((anchor_w, anchor_h), iou)
@@ -212,8 +219,10 @@ def build_feed_annots(_feed_annots, anchor_scales):
 def model_yolov2_backend(_out0, _out1, anchor_scales):
   print(_out0)
   print(_out1)
-  assert _out0.get_shape()[-1] == 2*FLAGS.num_grid, "_out0 should be 13*2=26"
-  assert _out1.get_shape()[-1] == FLAGS.num_grid, "_out1 should be 13"
+  assert _out0.get_shape()[2] == 2*FLAGS.num_grid, "_out0 should be 26x26, 13*2=26"
+  assert _out0.get_shape()[3] == 2*FLAGS.num_grid, "_out0 should be 26x26, 13*2=26"
+  assert _out1.get_shape()[2] == FLAGS.num_grid, "_out1 should be 13x13"
+  assert _out1.get_shape()[3] == FLAGS.num_grid, "_out1 should be 13x13"
 
   # subpixel cnn layer
   # re-orgarnize from large image to small image
@@ -236,7 +245,7 @@ def model_yolov2_backend(_out0, _out1, anchor_scales):
 
   with slim.arg_scope([slim.conv2d],
                       weights_regularizer=slim.l2_regularizer(FLAGS.weight_decay),
-                      biases_initializer=tf.zeros_initializer(),
+                      #biases_initializer=tf.zeros_initializer(),
                       data_format='NCHW'):
 
     out0 = base_conv2d(_out0, 512, [3, 3], scope='backend0')
@@ -266,19 +275,26 @@ def calculate_loss(y, out, anchor_scales):
 
   out_post = []
   for i, anchor_scale in enumerate(anchor_scales):
+    anchor_w, anchor_h = anchor_scale
+
     offset = i*(FLAGS.nclass + 1 + 4)
     yClass = y[:, :, :, offset:offset + FLAGS.nclass]
     Class  = out[:, :, :, offset:offset + FLAGS.nclass]
 
     offset += FLAGS.nclass
-    yC      = y[:, :, :, offset:offset + 1]
-    C       = out[:, :, :, offset:offset + 1]
-    yXY     = y[:, :, :, offset + 1:offset +3]
-    XY      = out[:, :, :, offset + 1:offset +3]
-    yWH     = y[:, :, :, offset + 3:offset + 5]
-    sqrtWH  = out[:, :, :, offset + 3:offset + 5]
-    WH      = tf.square(sqrtWH)
+    Obj     = y[:, :, :, offset:offset + 1]
+    Conf    = tf.sigmoid(out[:, :, :, offset:offset + 1])
 
+    yXY     = y[:, :, :, offset + 1:offset +3]
+    XY      = tf.sigmoid(out[:, :, :, offset + 1:offset +3])
+
+    anchor_wh = tf.constant([anchor_w, anchor_h], dtype=tf.float32)
+    yRegWH  = y[:, :, :, offset + 3:offset + 5]
+    yWH     = anchor_wh*tf.exp(yRegWH)
+    RegWH   = out[:, :, :, offset + 3:offset + 5]
+    WH      = anchor_wh*tf.exp(RegWH)
+
+    yArea = yWH[:,:,:,0]*yWH[:,:,:,1]
     yTopLeft = yXY - 0.5*yWH
     yBotRight = yXY + 0.5*yWH
     TopLeft = XY - 0.5*WH
@@ -290,12 +306,56 @@ def calculate_loss(y, out, anchor_scales):
     interWH = interBotRight - interTopLeft
     interWH = tf.maximum(interWH, 0.0)
     iArea = interWH[:,:,:,0]*interWH[:,:,:,1]
+    uArea = yArea + Area - iArea
+    iou = tf.expand_dims(tf.truediv(iArea, uArea), axis=3)
 
-    out_post.extend([Class, C, XY, WH])
+    ConfDiff   = tf.square(Obj*iou - Conf)
+    t0 = lambda_coord*tf.reduce_sum(Obj*tf.square(yXY - XY), axis=[1,2,3])
+    t1 = lambda_coord*tf.reduce_sum(Obj*tf.square(yRegWH - RegWH), axis=[1,2,3])
 
-  loss = 0.0 #
+    t2 = tf.reduce_sum(Obj*ConfDiff, axis=[1,2,3])
+    t3 = lambda_noobj*tf.reduce_sum((1 - Obj)*ConfDiff, axis=[1,2,3])
 
-  return loss
+    coord_term += t0 + t1
+    confi_term += t2 + t3
+
+    class_term = Obj*tf.square(yClass - Class)
+    class_term = tf.reduce_sum(class_term, axis=[1, 2, 3])
+
+    coord_term = tf.Print(coord_term, [coord_term], summarize=10, message="coord_term:")
+    confi_term = tf.Print(confi_term, [confi_term], summarize=10, message="confi_term:")
+    class_term = tf.Print(class_term, [class_term], summarize=10, message="class_term:")
+
+    out_post.extend([Class, Conf, XY, RegWH])
+  out_post = tf.concat(out_post, axis=3)
+
+  loss = coord_term + confi_term + class_term
+  loss = tf.reduce_mean(loss)
+
+  return loss, out_post
+
+def get_opt(loss, scope):
+
+  print('loss:{}'.format(loss))
+
+  var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope)
+
+  print("==get_opt()============================")
+  print(scope)
+  for item in var_list:
+    print(item.name)
+
+  global_step = tf.Variable(0, name='global_step', trainable=False)
+  learning_rate = tf.Variable(FLAGS.learning_rate0, trainable=False)
+  lr_decay_op1 = tf.assign(learning_rate, FLAGS.learning_rate1)
+  lr_decay_op2 = tf.assign(learning_rate, FLAGS.learning_rate2)
+  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+
+#  optimizer = tf.train.MomentumOptimizer(FLAGS.learning_rate, FLAGS.momentum)
+  optimizer = tf.train.AdamOptimizer(learning_rate)
+  opt = optimizer.minimize(loss, var_list=var_list, global_step=global_step)
+
+  return opt, lr_decay_op1, lr_decay_op2
 
 def main(args):
 
@@ -351,21 +411,25 @@ def main(args):
       _out = model_yolov2_backend(vgg_out0, vgg_out1, anchor_scales)
     print("1. network setup is done.")
 
-
-    regularization_loss = tf.losses.get_regularization_loss(scope='yolov2')
-    print('regularization_loss:', regularization_loss)
-    #tf.losses.add_loss(regularization_loss)
-
     out = tf.transpose(_out, perm=[0, 2, 3, 1])
-    loss = calculate_loss(_y, out, anchor_scales)
-    print(loss)
-    tf.losses.add_loss(loss)
-    total_loss = tf.losses.get_total_loss(add_regularization_losses=False)
-    print('A:',total_loss)
+    loss, out_post = calculate_loss(_y, out, anchor_scales)
+    regularization_loss = tf.losses.get_regularization_loss(scope='yolov2')
+    total_loss = loss + regularization_loss
 
     #total_loss += regularization_loss
-    print('B:', total_loss)
     print("2. loss setup is done.")
+
+    var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+    print("==get_opt()============================")
+    for item in var_list:
+      print(item.name)
+    opt, lr_decay_op1, lr_decay_op2 = get_opt(total_loss, 'yolov2')
+    print("3. optimizer setup is done.")
+
+    epoch_step, epoch_update = utils.get_epoch()
+    init_op = tf.group(tf.global_variables_initializer(),
+                     tf.local_variables_initializer())
+    print("4. misc setup is done.")
 
 
     test_input = tf.range(start=0, limit=(4*4*2), dtype=tf.float32)
@@ -447,13 +511,15 @@ def main(args):
 
           feed_dict = {_x: feed_imgs, _y: feed_annots, _st: feed_scaletrans, _flip: feed_flips}
 
-          print(_y)
+          _, total_loss_val, loss_val, regularization_loss_val = sess.run([opt, total_loss, loss, regularization_loss], feed_dict=feed_dict)
 
-          #_, _ = sess.run([opt, total_loss], feed_dict=feed_dict)
-          if itr % 1 == 0:
-            data_val, aug_val = sess.run([_x, aug], feed_dict=feed_dict)
-            label_val = sess.run(_y, feed_dict=feed_dict)
-            out_val = sess.run(_y, feed_dict=feed_dict)
+          print("total_loss: {}".format(total_loss_val))
+          print("loss: {}, regularization_loss: {}".format(loss_val, regularization_loss_val))
+
+          if itr % 5 == 0:
+            data_val, aug_val, label_val, out_val = sess.run([_x, aug, _y, out_post], feed_dict=feed_dict)
+#            label_val = sess.run(_y, feed_dict=feed_dict)
+#            out_val = sess.run(out_post, feed_dict=feed_dict)
             orig_img = cv2.cvtColor(data_val[0],cv2.COLOR_RGB2BGR)
             # crop region
             cr = feed_scaletrans[0]*FLAGS.img_orig_size
@@ -468,10 +534,10 @@ def main(args):
             aug_img = visualization(aug_img, label_val[0], anchor_scales, idx2obj, palette)
 
             out_img = cv2.resize(out_img, (FLAGS.img_vis_size, FLAGS.img_vis_size))
-            out_img = visualization(out_img, out_val[0], anchor_scales, idx2obj, palette, option=None)
+            out_img = visualization(out_img, out_val[0], anchor_scales, idx2obj, palette, options=[])
             cv2.imshow('input', improc.img_listup([orig_img, aug_img, out_img]))
 
-          key = cv2.waitKey(0)
+          key = cv2.waitKey(5)
           if key == 27:
             sys.exit()
 
