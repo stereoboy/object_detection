@@ -48,7 +48,7 @@ tf.flags.DEFINE_float("init_stddev", "0.1", "stddev for initializer")
 
 slim = tf.contrib.slim
 
-def visualization(img, annots, anchor_infos, idx2obj, palette, option='draw_anchor'):
+def visualization(img, annots, anchor_infos, idx2obj, palette, options=['draw_anchor', 'target']):
   print("visualization()")
   h, w = img.shape[:2]
 
@@ -66,10 +66,19 @@ def visualization(img, annots, anchor_infos, idx2obj, palette, option='draw_anch
         for j, anchor_scale in enumerate(anchor_scales):
           conf = annot[row, col, offset:offset + FLAGS.nclass]
           idx = int(np.argmax(conf))
-          if idx > 0 and np.max(conf) > 0.5:
-            print(idx, conf)
+          if 'target' in options:
+            max_conf = np.max(conf)
+          else:
+            max_conf = np.max(common.softmax(conf))
+#            if np.max(conf) > 0.5:
+#              print(conf)
+#              print(common.softmax(conf))
+
+          if idx > 0 and max_conf > 0.5:
+            #print(idx, conf)
             _color = palette[idx]
-            color = (int(_color[2]), int(_color[1]), int(_color[0]))
+            #color = (int(_color[2]), int(_color[1]), int(_color[0]))
+            color = _color[::-1].astype(dtype=np.int32).tolist()
             name = idx2obj[idx]
 
             anchor_w, anchor_h = anchor_scale
@@ -85,10 +94,10 @@ def visualization(img, annots, anchor_infos, idx2obj, palette, option='draw_anch
             nw, nh = np.exp(reg_nw)*anchor_w, np.exp(reg_nh)*anchor_h
 
             cwh = ((cx, cy), (nw, nh))
-            print(cwh)
-            print(anchor_w, anchor_h)
-            print(reg_cx, reg_cy, reg_nw, reg_nh)
-            print('--------------------------------------')
+#            print(cwh)
+#            print(anchor_w, anchor_h)
+#            print(reg_cx, reg_cy, reg_nw, reg_nh)
+#            print('--------------------------------------')
             ((x1, y1), (x2, y2)) = improc.cvt_cwh2bbox(cwh)
             name = name + '%d_%d'%(i, j) + '_%.2f'%(np.max(conf))
 
@@ -102,9 +111,9 @@ def visualization(img, annots, anchor_infos, idx2obj, palette, option='draw_anch
             anchor_e = (int(anchor_bbox[1][0]*w), int(anchor_bbox[1][1]*h))
 
             #vis_grid= cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
-            img = cv2.rectangle(img, b, e, color, 7)
-            if option == 'draw_anchor':
+            if 'draw_anchor' in options:
               img = cv2.rectangle(img, anchor_b, anchor_e, (0, 0, 255), 3)
+            img = cv2.rectangle(img, b, e, color, 6)
             img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
             img = cv2.circle(img, (int(cx*w), int(cy*h)), 4, color, -1)
 
@@ -177,6 +186,8 @@ def build_feed_annots(_feed_annots, anchor_infos):
         idx = int(idx)
 
         if x_loc < 0 or y_loc < 0 or x_loc >= w_num_grid or y_loc >= h_num_grid:
+          continue
+        if nw < 0 or nh < 0:
           continue
 
         offset = 0
@@ -344,12 +355,17 @@ def calculate_loss(ys, outs, anchor_scales_list):
   #positive_mask = tf.reduce_max(flat_class_y, axis=2) > 0.5
   #negative_mask = tf.logical_not(positive_mask)
 
-  negative_mask = tf.cast(flat_class_y[:, :, 0], dtype=tf.bool)
-  positive_mask = tf.logical_not(negative_mask)
+#  negative_mask = tf.cast(flat_class_y[:, :, 0], dtype=tf.bool)
+#  positive_mask = tf.logical_not(negative_mask)
+#
+#  positive_mask = tf.cast(positive_mask, dtype=tf.float32)
+#  positive_num  = tf.reduce_sum(positive_mask, axis=1)
+#  negative_mask = tf.cast(negative_mask, dtype=tf.float32)
+#  negative_num  = tf.reduce_sum(negative_mask, axis=1)
+  negative_mask = flat_class_y[:, :, 0]
+  positive_mask = 1.0 - negative_mask
 
-  positive_mask = tf.cast(positive_mask, dtype=tf.float32)
   positive_num  = tf.reduce_sum(positive_mask, axis=1)
-  negative_mask = tf.cast(negative_mask, dtype=tf.float32)
   negative_num  = tf.reduce_sum(negative_mask, axis=1)
 
   print('positive_mask', positive_mask)
@@ -553,7 +569,6 @@ def main(args):
     epoch_step, epoch_update = utils.get_epoch()
     init_op = tf.group(tf.global_variables_initializer(),
                      tf.local_variables_initializer())
-
     print("5. misc setup is done.")
 
     config=tf.ConfigProto()
@@ -611,20 +626,20 @@ def main(args):
           test = tf.get_default_graph().get_tensor_by_name("ssd/backend0/weights:0")
           test = tf.get_default_graph().get_tensor_by_name("ssd/backend0/biases:0")
 
-          print("test before:", test.eval())
-          var_grad = tf.gradients(loss, [test])[0]
-          var_grad_val = sess.run([var_grad], feed_dict=feed_dict)
-          print("test var_grad:", np.sum(var_grad_val))
-          print("test var_grad:", var_grad_val)
+#          print("test before:", test.eval())
+#          var_grad = tf.gradients(loss, [test])[0]
+#          var_grad_val = sess.run([var_grad], feed_dict=feed_dict)
+#          print("test var_grad:", np.sum(var_grad_val))
+#          print("test var_grad:", var_grad_val)
           _, total_loss_val, loss_val, regularization_loss_val = sess.run([opt, total_loss, loss, regularization_loss], feed_dict=feed_dict)
-          print("test after:", test.eval())
+#          print("test after:", test.eval())
 
           print("total_loss: {}".format(total_loss_val))
           print("loss: {}, regularization_loss: {}".format(loss_val, regularization_loss_val))
-          if itr % 1 == 0:
-            data_val, aug_val = sess.run([_x, aug], feed_dict=feed_dict)
-            label_val = sess.run(_y, feed_dict=feed_dict)
-            out_val = sess.run(out_layers, feed_dict=feed_dict)
+          if itr % 5 == 0:
+            data_val, aug_val, label_val, out_val = sess.run([_x, aug, _y, out_layers], feed_dict=feed_dict)
+            #label_val = sess.run(_y, feed_dict=feed_dict)
+            #out_val = sess.run(out_layers, feed_dict=feed_dict)
             orig_img = cv2.cvtColor(data_val[0],cv2.COLOR_RGB2BGR)
             # crop region
             cr = feed_scaletrans[0]*FLAGS.img_orig_size
@@ -641,18 +656,19 @@ def main(args):
 
             out_val = [out[0] for out in out_val]
             out_img = cv2.resize(out_img, (FLAGS.img_vis_size, FLAGS.img_vis_size))
-            out_img = visualization(out_img, out_val, anchor_infos, idx2obj, palette, option=None)
+            out_img = visualization(out_img, out_val, anchor_infos, idx2obj, palette, options=[])
             cv2.imshow('input', improc.img_listup([orig_img, aug_img, out_img]))
 
-          key = cv2.waitKey(0)
+          key = cv2.waitKey(5)
           if key == 27:
             sys.exit()
 
             #compare(feed_annots_list[0], out_val[0])
 
-        print("#######################################################")
+          if itr %100 == 0: 
+            print("#######################################################")
+            saver.save(sess, checkpoint)
         _ = sess.run(epoch_update)
-        saver.save(sess, checkpoint)
 
 if __name__ == "__main__":
   tf.app.run()
