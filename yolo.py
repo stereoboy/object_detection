@@ -589,6 +589,10 @@ def main(args):
   idx2obj = voc.idx2obj
   cell_info_dim = FLAGS.nclass + FLAGS.B*(1 + 4) # 2x(confidence + (x, y, w, h)) + class
 
+  _R_MEAN = 123.68
+  _G_MEAN = 116.78
+  _B_MEAN = 103.94
+
   #pool = mp.Pool(processes=6)
 
   drop_prob = tf.placeholder(tf.float32)
@@ -608,12 +612,14 @@ def main(args):
   img_list = [os.path.join(FLAGS.train_img_dir, filename + ".png") for filename in filelist]
   annot_list = [os.path.join(FLAGS.train_annot_dir, filename + ".label") for filename in filelist]
 
-  mean = tf.constant(np.array((122.67891434, 116.66876762, 104.00698793), dtype=np.float32))
 
-  aug = improc.augment_scale_translate_flip(_x, FLAGS.img_size, _st, _flip, FLAGS.batch_size)
-  aug = tf.map_fn(lambda x:improc.augment_br_sat_hue_cont(x), aug)
-  x = tf.cast(aug, dtype=tf.float32) - mean
-  x = improc.augment_gaussian_noise(x)
+  with tf.name_scope("augmentation"):
+    aug = improc.augment_scale_translate_flip(_x, FLAGS.img_size, _st, _flip, FLAGS.batch_size)
+    aug = improc.augment_br_sat_hue_cont(aug)
+    with tf.name_scope("mean_subtraction"):
+      mean = tf.constant(np.array((122.67891434, 116.66876762, 104.00698793), dtype=np.float32))
+      x = tf.cast(aug, dtype=tf.float32) - mean
+    x = improc.augment_gaussian_noise(x)
   y = _y
 
   #with tf.device(FLAGS.device):
@@ -637,7 +643,7 @@ def main(args):
   loss, out_post, test = calculate_loss(y, out)
   print("3. loss setup is done.")
 
-  epoch_step, epoch_update = get_epoch()
+  epoch_step, epoch_update = utils.get_epoch()
   opt, lr_decay_op1, lr_decay_op2 = get_opt(loss, "YOLO")
   print("4. optimizer setup is done.")
 
@@ -677,7 +683,7 @@ def main(args):
 
       random.shuffle(filelist)
       max_itr = len(filelist)//FLAGS.batch_size
-      for itr in range(0, len(filelist)//FLAGS.batch_size):
+      for itr in range(0, max_itr):
         print("===================================================================")
         print("[{}] {}/{}".format(epoch_val, itr, max_itr))
 
