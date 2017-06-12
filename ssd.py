@@ -506,10 +506,13 @@ def main(args):
     _st = tf.placeholder(tf.float32, [None, 4])
     _flip = tf.placeholder(tf.bool, [None])
 
-    aug = improc.augment_scale_translate_flip(_x, FLAGS.img_size, _st, _flip, FLAGS.batch_size)
-    aug = tf.map_fn(lambda x:improc.augment_br_sat_hue_cont(x), aug)
-    x = tf.cast(aug, dtype=tf.float32) - mean
-    x = improc.augment_gaussian_noise(x)
+    with tf.name_scope("augmentation"):
+      aug = improc.augment_scale_translate_flip(_x, FLAGS.img_size, _st, _flip, FLAGS.batch_size)
+      aug = improc.augment_br_sat_hue_cont(aug)
+      with tf.name_scope("mean_subtraction"):
+        mean = tf.constant(np.array((_R_MEAN, _G_MEAN, _B_MEAN), dtype=np.float32))
+        x = tf.cast(aug, dtype=tf.float32) - mean
+      x = improc.augment_gaussian_noise(x)
 
     x = tf.transpose(x, perm=[0, 3, 1, 2])
 
@@ -575,6 +578,9 @@ def main(args):
     #config.log_device_placement=True
     config.intra_op_parallelism_threads=FLAGS.num_threads
     with tf.Session(config=config) as sess:
+      init_fn(sess)
+
+      sess.run(init_op)
 
       saver = tf.train.Saver()
       checkpoint = tf.train.latest_checkpoint(FLAGS.save_dir)
@@ -588,19 +594,17 @@ def main(args):
         filename = "checkpoint" + dt.strftime("%Y-%m-%d_%H-%M-%S")
         checkpoint = os.path.join(FLAGS.save_dir, filename)
 
-      init_fn(sess)
-
-      sess.run(init_op)
-      for epoch in range(FLAGS.max_epoch):
+      epoch_restored = sess.run(epoch_step)
+      for epoch in range(epoch_restored, FLAGS.max_epoch):
         print("#####################################################################")
-        epoch_val = sess.run(epoch_step)
-        print("epoch: {}".format(epoch_val))
+        print("epoch: {}".format(epoch))
 
         #random.shuffle(filelist)
         max_itr = len(filelist)//FLAGS.batch_size
-        for itr in range(0, len(filelist)//FLAGS.batch_size):
+        for itr in range(0, max_itr):
           print("===================================================================")
-          print("[{}] {}/{}".format(epoch_val, itr, max_itr))
+          print("[{}] {}/{}".format(epoch, itr, max_itr))
+          step = epoch*max_itr + itr
 
           # build minibatch
           b = itr*FLAGS.batch_size
