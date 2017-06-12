@@ -43,6 +43,8 @@ tf.flags.DEFINE_integer("num_threads", "6", "max thread number")
 tf.flags.DEFINE_string("filelist", "filelist.json", "filelist.json")
 tf.flags.DEFINE_string("save_dir", "yolov2_checkpoints", "dir for checkpoints")
 tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base directory for data")
+tf.flags.DEFINE_string("log_dir", "yolov2_checkpoints", "directory for log")
+tf.flags.DEFINE_string("log_name", "yolov2", "directory for log")
 tf.flags.DEFINE_string("train_img_dir", "./train_img", "base directory for data")
 tf.flags.DEFINE_string("train_annot_dir", "./train_annot", "base directory for data")
 tf.flags.DEFINE_float("weight_decay", "0.0005", "weight decay for L2 regularization")
@@ -240,7 +242,7 @@ def model_yolov2_backend(_out0, _out1, anchor_scales):
     print('kernel', kernel.shape)
     print('kernel', kernel)
     kernel = tf.Variable(kernel, dtype=tf.float32, trainable=False)
-    out = tf.nn.conv2d(x, kernel, strides=[1, 1, 2, 2], padding='SAME', data_format='NCHW')
+    out = tf.nn.conv2d(x, kernel, strides=[1, 1, 2, 2], padding='SAME', data_format='NCHW', name='superpixel_merge')
     return out
 
   with slim.arg_scope([slim.conv2d],
@@ -277,60 +279,72 @@ def calculate_loss(y, out, anchor_scales):
   for i, anchor_scale in enumerate(anchor_scales):
     anchor_w, anchor_h = anchor_scale
 
-    offset = i*(FLAGS.nclass + 1 + 4)
-    yClass = y[:, :, :, offset:offset + FLAGS.nclass]
-    Class  = out[:, :, :, offset:offset + FLAGS.nclass]
+    with tf.name_scope('slice'):
+      offset = i*(FLAGS.nclass + 1 + 4)
+      yClass = y[:, :, :, offset:offset + FLAGS.nclass]
+      Class  = out[:, :, :, offset:offset + FLAGS.nclass]
 
-    offset += FLAGS.nclass
-    Obj     = y[:, :, :, offset:offset + 1]
-    Conf    = tf.sigmoid(out[:, :, :, offset:offset + 1])
+      offset += FLAGS.nclass
+      Obj     = y[:, :, :, offset:offset + 1]
+      Conf    = tf.sigmoid(out[:, :, :, offset:offset + 1])
 
-    yXY     = y[:, :, :, offset + 1:offset +3]
-    XY      = tf.sigmoid(out[:, :, :, offset + 1:offset +3])
+      yXY     = y[:, :, :, offset + 1:offset +3]
+      XY      = tf.sigmoid(out[:, :, :, offset + 1:offset +3])
 
-    anchor_wh = tf.constant([anchor_w, anchor_h], dtype=tf.float32)
-    yRegWH  = y[:, :, :, offset + 3:offset + 5]
-    yWH     = anchor_wh*tf.exp(yRegWH)
-    RegWH   = out[:, :, :, offset + 3:offset + 5]
-    WH      = anchor_wh*tf.exp(RegWH)
+      anchor_wh = tf.constant([anchor_w, anchor_h], dtype=tf.float32)
+      yRegWH  = y[:, :, :, offset + 3:offset + 5]
+      yWH     = anchor_wh*tf.exp(yRegWH)
+      RegWH   = out[:, :, :, offset + 3:offset + 5]
+      WH      = anchor_wh*tf.exp(RegWH)
 
-    yArea = yWH[:,:,:,0]*yWH[:,:,:,1]
-    yTopLeft = yXY - 0.5*yWH
-    yBotRight = yXY + 0.5*yWH
-    TopLeft = XY - 0.5*WH
-    BotRight = XY + 0.5*WH
-    Area = WH[:,:,:,0]*WH[:,:,:,1]
+    with tf.name_scope('cal_iou'):
+      yArea = yWH[:,:,:,0]*yWH[:,:,:,1]
+      yTopLeft = yXY - 0.5*yWH
+      yBotRight = yXY + 0.5*yWH
+      TopLeft = XY - 0.5*WH
+      BotRight = XY + 0.5*WH
+      Area = WH[:,:,:,0]*WH[:,:,:,1]
 
-    interTopLeft = tf.maximum(yTopLeft, TopLeft)
-    interBotRight = tf.minimum(yBotRight, BotRight)
-    interWH = interBotRight - interTopLeft
-    interWH = tf.maximum(interWH, 0.0)
-    iArea = interWH[:,:,:,0]*interWH[:,:,:,1]
-    uArea = yArea + Area - iArea
-    iou = tf.expand_dims(tf.truediv(iArea, uArea), axis=3)
+      interTopLeft = tf.maximum(yTopLeft, TopLeft)
+      interBotRight = tf.minimum(yBotRight, BotRight)
+      interWH = interBotRight - interTopLeft
+      interWH = tf.maximum(interWH, 0.0)
+      iArea = interWH[:,:,:,0]*interWH[:,:,:,1]
+      uArea = yArea + Area - iArea
+      iou = tf.expand_dims(tf.truediv(iArea, uArea), axis=3)
 
-    ConfDiff   = tf.square(Obj*iou - Conf)
-    t0 = lambda_coord*tf.reduce_sum(Obj*tf.square(yXY - XY), axis=[1,2,3])
-    t1 = lambda_coord*tf.reduce_sum(Obj*tf.square(yRegWH - RegWH), axis=[1,2,3])
+    with tf.name_scope('coord_loss'):
+      t0 = lambda_coord*tf.reduce_sum(Obj*tf.square(yXY - XY), axis=[1,2,3])
+      t1 = lambda_coord*tf.reduce_sum(Obj*tf.square(yRegWH - RegWH), axis=[1,2,3])
+      coord_term += t0 + t1
 
-    t2 = tf.reduce_sum(Obj*ConfDiff, axis=[1,2,3])
-    t3 = lambda_noobj*tf.reduce_sum((1 - Obj)*ConfDiff, axis=[1,2,3])
+    with tf.name_scope('conf_loss'):
+      ConfDiff   = tf.square(Obj*iou - Conf)
+      t2 = tf.reduce_sum(Obj*ConfDiff, axis=[1,2,3])
+      t3 = lambda_noobj*tf.reduce_sum((1 - Obj)*ConfDiff, axis=[1,2,3])
+      confi_term += t2 + t3
 
-    coord_term += t0 + t1
-    confi_term += t2 + t3
-
-    class_term = Obj*tf.square(yClass - Class)
-    class_term = tf.reduce_sum(class_term, axis=[1, 2, 3])
-
-    coord_term = tf.Print(coord_term, [coord_term], summarize=10, message="coord_term:")
-    confi_term = tf.Print(confi_term, [confi_term], summarize=10, message="confi_term:")
-    class_term = tf.Print(class_term, [class_term], summarize=10, message="class_term:")
+    with tf.name_scope('class_loss'):
+      class_term += tf.reduce_sum(Obj*tf.square(yClass - Class), axis=[1, 2, 3])
 
     out_post.extend([Class, Conf, XY, RegWH])
-  out_post = tf.concat(out_post, axis=3)
+  out_post = tf.concat(out_post, axis=3, name='merge_into_final_output')
+
+
+  coord_term = tf.Print(coord_term, [coord_term], summarize=10, message="coord_term:")
+  confi_term = tf.Print(confi_term, [confi_term], summarize=10, message="confi_term:")
+  class_term = tf.Print(class_term, [class_term], summarize=10, message="class_term:")
+
+  coord_term = tf.reduce_mean(coord_term)
+  confi_term = tf.reduce_mean(confi_term)
+  class_term = tf.reduce_mean(class_term)
+
+  tf.summary.scalar('coord_term', coord_term)
+  tf.summary.scalar('confi_term', confi_term)
+  tf.summary.scalar('class_term', class_term)
 
   loss = coord_term + confi_term + class_term
-  loss = tf.reduce_mean(loss)
+  #loss = tf.reduce_mean(loss)
 
   return loss, out_post
 
@@ -374,26 +388,31 @@ def main(args):
   _G_MEAN = 116.78
   _B_MEAN = 103.94
 
+  log_filename = os.path.join(FLAGS.log_dir, FLAGS.log_name)
+  print("summary_log:", log_filename)
+  writer = tf.summary.FileWriter(log_filename)
   # this is from yolo-voc.cfg in darknet source code
   # 1.0 means individual grid cell width
   anchor_scales =  [(1.3221, 1.73145), (3.19275, 4.00944), (5.05587, 8.09892), (9.47112, 4.84053), (11.2364, 10.0071)]
   #anchor_scales =  [(1.3221, 1.73145)]
 
   with tf.Graph().as_default():
-    mean = tf.constant(np.array((_R_MEAN, _G_MEAN, _B_MEAN), dtype=np.float32))
 
     detect_dims = len(anchor_scales)*(FLAGS.nclass + 1 + 4)
-    _x = tf.placeholder(tf.float32, [None, FLAGS.img_orig_size, FLAGS.img_orig_size, FLAGS.channel])
-    _y = tf.placeholder(tf.float32, [FLAGS.batch_size, FLAGS.num_grid, FLAGS.num_grid, detect_dims])
-    _st = tf.placeholder(tf.float32, [None, 4])
-    _flip = tf.placeholder(tf.bool, [None])
+    _x = tf.placeholder(tf.float32, [None, FLAGS.img_orig_size, FLAGS.img_orig_size, FLAGS.channel], name="raw_input")
+    _y = tf.placeholder(tf.float32, [FLAGS.batch_size, FLAGS.num_grid, FLAGS.num_grid, detect_dims], name="raw_label")
+    _st = tf.placeholder(tf.float32, [None, 4], name="scale_translation_seed")
+    _flip = tf.placeholder(tf.bool, [None], name="flip_seed")
 
-    aug = improc.augment_scale_translate_flip(_x, FLAGS.img_size, _st, _flip, FLAGS.batch_size)
-    aug = tf.map_fn(lambda x:improc.augment_br_sat_hue_cont(x), aug)
-    x = tf.cast(aug, dtype=tf.float32) - mean
-    x = improc.augment_gaussian_noise(x)
+    with tf.name_scope("augmentation"):
+      aug = improc.augment_scale_translate_flip(_x, FLAGS.img_size, _st, _flip, FLAGS.batch_size)
+      aug = improc.augment_br_sat_hue_cont(aug)
+      with tf.name_scope("mean_subtraction"):
+        mean = tf.constant(np.array((_R_MEAN, _G_MEAN, _B_MEAN), dtype=np.float32))
+        x = tf.cast(aug, dtype=tf.float32) - mean
+      x = improc.augment_gaussian_noise(x)
 
-    x = tf.transpose(x, perm=[0, 3, 1, 2])
+    x = tf.transpose(x, perm=[0, 3, 1, 2], name="augmented_input")
 
     print("0. input image setup is done.")
 
@@ -411,48 +430,57 @@ def main(args):
       _out = model_yolov2_backend(vgg_out0, vgg_out1, anchor_scales)
     print("1. network setup is done.")
 
-    out = tf.transpose(_out, perm=[0, 2, 3, 1])
-    loss, out_post = calculate_loss(_y, out, anchor_scales)
-    regularization_loss = tf.losses.get_regularization_loss(scope='yolov2')
-    total_loss = loss + regularization_loss
+    out = tf.transpose(_out, perm=[0, 2, 3, 1], name='output')
+
+    with tf.name_scope('cal_loss'):
+      loss, out_post = calculate_loss(_y, out, anchor_scales)
+      regularization_loss = tf.losses.get_regularization_loss(scope='yolov2')
+      total_loss = loss + regularization_loss
+
+    tf.summary.scalar('total_loss', total_loss)
+    tf.summary.scalar('loss', loss)
+    tf.summary.scalar('regularization_loss', regularization_loss)
 
     #total_loss += regularization_loss
     print("2. loss setup is done.")
 
+    epoch_step, epoch_update = utils.get_epoch()
     var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
     print("==get_opt()============================")
     for item in var_list:
       print(item.name)
-    opt, lr_decay_op1, lr_decay_op2 = get_opt(total_loss, 'yolov2')
+    with tf.name_scope('train'):
+      opt, lr_decay_op1, lr_decay_op2 = get_opt(total_loss, 'yolov2')
     print("3. optimizer setup is done.")
 
-    epoch_step, epoch_update = utils.get_epoch()
     init_op = tf.group(tf.global_variables_initializer(),
-                     tf.local_variables_initializer())
+                       tf.local_variables_initializer(), name='initialize')
     print("4. misc setup is done.")
 
+    merged = tf.summary.merge_all()
+    print("5. summary setup is  done.")
 
-    test_input = tf.range(start=0, limit=(4*4*2), dtype=tf.float32)
-    test_input = tf.reshape(test_input, (1, 4, 4, 2))
-
-    a = np.zeros((2, 2, 2, 8))
-    for i in range(a.shape[0]):
-      for j in range(a.shape[1]):
-        for k in range(a.shape[2]):
-          print(i, j, k)
-          a[i, j, k, 4*k + 2*i + j ] = 1.0
-          print(a)
-    #a = np.array([[[1, 0, 0, 0], [0, 1, 0, 0]], [[0, 0, 1, 0], [0, 0, 0, 1]]], dtype=np.float32)
-    #a = np.expand_dims(a, axis=2)
-    print('a', a.shape)
-    print('a', a)
-    kernel = tf.Variable(a, dtype=tf.float32, trainable=False)
-    conved = tf.nn.conv2d(test_input, kernel, strides=[1, 2, 2, 1], padding='SAME')
-    var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
-
-    epoch_step, epoch_update = utils.get_epoch()
-    init_op = tf.group(tf.global_variables_initializer(),
-                     tf.local_variables_initializer())
+#    test_input = tf.range(start=0, limit=(4*4*2), dtype=tf.float32)
+#    test_input = tf.reshape(test_input, (1, 4, 4, 2))
+#
+#    a = np.zeros((2, 2, 2, 8))
+#    for i in range(a.shape[0]):
+#      for j in range(a.shape[1]):
+#        for k in range(a.shape[2]):
+#          print(i, j, k)
+#          a[i, j, k, 4*k + 2*i + j ] = 1.0
+#          print(a)
+#    #a = np.array([[[1, 0, 0, 0], [0, 1, 0, 0]], [[0, 0, 1, 0], [0, 0, 0, 1]]], dtype=np.float32)
+#    #a = np.expand_dims(a, axis=2)
+#    print('a', a.shape)
+#    print('a', a)
+#    kernel = tf.Variable(a, dtype=tf.float32, trainable=False)
+#    conved = tf.nn.conv2d(test_input, kernel, strides=[1, 2, 2, 1], padding='SAME')
+#    var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+#
+#    epoch_step, epoch_update = utils.get_epoch()
+#    init_op = tf.group(tf.global_variables_initializer(),
+#                     tf.local_variables_initializer())
     print("==get_opt()============================")
     for item in var_list:
       print(item.name)
@@ -464,7 +492,11 @@ def main(args):
     #config.log_device_placement=True
     config.intra_op_parallelism_threads=FLAGS.num_threads
     with tf.Session(config=config) as sess:
+      init_fn(sess)
 
+      sess.run(init_op)
+
+      writer.add_graph(sess.graph)
       saver = tf.train.Saver()
       checkpoint = tf.train.latest_checkpoint(FLAGS.save_dir)
       print("checkpoint: %s" % checkpoint)
@@ -477,10 +509,6 @@ def main(args):
         filename = "checkpoint" + dt.strftime("%Y-%m-%d_%H-%M-%S")
         checkpoint = os.path.join(FLAGS.save_dir, filename)
 
-      init_fn(sess)
-
-      sess.run(init_op)
-
 #      print(tensor[0].eval().shape)
 #      print(test_input.eval())
 #      print(kernel.eval())
@@ -488,16 +516,17 @@ def main(args):
 #      print(conved.eval())
 #      print(conved.eval().shape)
 
-      for epoch in range(FLAGS.max_epoch):
+      epoch_restored = sess.run(epoch_step)
+      for epoch in range(epoch_restored, FLAGS.max_epoch):
         print("#####################################################################")
-        epoch_val = sess.run(epoch_step)
-        print("epoch: {}".format(epoch_val))
+        print("epoch: {}".format(epoch))
 
-        #random.shuffle(filelist)
+        random.shuffle(filelist)
         max_itr = len(filelist)//FLAGS.batch_size
-        for itr in range(0, len(filelist)//FLAGS.batch_size):
+        for itr in range(0, max_itr):
           print("===================================================================")
-          print("[{}] {}/{}".format(epoch_val, itr, max_itr))
+          print("[{}] {}/{}".format(epoch, itr, max_itr))
+          step = epoch*max_itr + itr
 
           # build minibatch
           b = itr*FLAGS.batch_size
@@ -511,7 +540,8 @@ def main(args):
 
           feed_dict = {_x: feed_imgs, _y: feed_annots, _st: feed_scaletrans, _flip: feed_flips}
 
-          _, total_loss_val, loss_val, regularization_loss_val = sess.run([opt, total_loss, loss, regularization_loss], feed_dict=feed_dict)
+          summary, _, total_loss_val, loss_val, regularization_loss_val = sess.run([merged, opt, total_loss, loss, regularization_loss], feed_dict=feed_dict)
+          writer.add_summary(summary, step)
 
           print("total_loss: {}".format(total_loss_val))
           print("loss: {}, regularization_loss: {}".format(loss_val, regularization_loss_val))
@@ -546,6 +576,8 @@ def main(args):
         print("#######################################################")
         _ = sess.run(epoch_update)
         saver.save(sess, checkpoint)
+
+  writer.close()
 
 if __name__ == "__main__":
   tf.app.run()

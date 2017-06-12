@@ -4,15 +4,21 @@ import cv2
 
 def augment_br_sat_hue_cont(image):
 
-  # all functions include clamping for overflow values
-  image = tf.image.random_brightness(image, max_delta=0.3)
-  image = tf.image.random_saturation(image, lower=0.7, upper=1.3)
-  #image = tf.image.random_hue(image, max_delta=0.032)
-  #image = tf.image.random_contrast(image, lower=0.7, upper=1.3)
+  def _augment_br_sat_hue_cont(x):
+    # all functions include clamping for overflow values
+    x = tf.image.random_brightness(x, max_delta=0.3)
+    x = tf.image.random_saturation(x, lower=0.7, upper=1.3)
+    #x = tf.image.random_hue(x, max_delta=0.032)
+    #x = tf.image.random_contrast(x, lower=0.7, upper=1.3)
+    return x
+
+  with tf.name_scope('random_sat_hue_cont'):
+    image = tf.map_fn(lambda x:_augment_br_sat_hue_cont(x), image)
   return image
 
 def augment_gaussian_noise(images, std=0.2):
-  noise = tf.random_normal(shape=tf.shape(images), mean=0.0, stddev=std, dtype=tf.float32)
+  with tf.name_scope('gaussian_noise'):
+    noise = tf.random_normal(shape=tf.shape(images), mean=0.0, stddev=std, dtype=tf.float32)
   return images + noise
 
 def augment_scale_translate_flip(images, img_size, boxes, flip, batch_size, scale_range=0.2):
@@ -21,26 +27,28 @@ def augment_scale_translate_flip(images, img_size, boxes, flip, batch_size, scal
   #batch_size = FLAGS.batch_size # this value should be fixed up
 
   # Translation
-  scale = 1.0 + tf.random_uniform([1], minval=0.0, maxval=scale_range)
-  size = tf.constant([img_size, img_size])
-  new_size = scale*tf.cast(size, dtype=tf.float32)
+  with tf.name_scope('scale_trans'):
+    scale = 1.0 + tf.random_uniform([1], minval=0.0, maxval=scale_range)
+    size = tf.constant([img_size, img_size])
+    new_size = scale*tf.cast(size, dtype=tf.float32)
 
-  box_ind = tf.range(start=0, limit=batch_size, dtype=tf.int32)
+    box_ind = tf.range(start=0, limit=batch_size, dtype=tf.int32)
 
-  images = tf.image.crop_and_resize(
-      images,
-      boxes=boxes,
-      box_ind=box_ind,
-      crop_size=size
-      )
+    images = tf.image.crop_and_resize(
+        images,
+        boxes=boxes,
+        box_ind=box_ind,
+        crop_size=size
+        )
 
-  idxs = tf.range(0, batch_size, dtype=tf.int32)
   def flip_left_right(i):
     image = images[i]
     flip_or_not = flip[i]
     return tf.cond(flip_or_not, lambda: tf.reverse(image, axis=[1]), lambda: image)
 
-  images = tf.map_fn(lambda idx:flip_left_right(idx), idxs, dtype=tf.float32)
+  with tf.name_scope('flip'):
+    idxs = tf.range(0, batch_size, dtype=tf.int32)
+    images = tf.map_fn(lambda idx:flip_left_right(idx), idxs, dtype=tf.float32)
   return images
 
 def cal_area(box):
