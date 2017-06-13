@@ -7,6 +7,7 @@ import json
 from datetime import datetime, date, time
 import cv2
 import sys
+import signal
 import getopt
 import pickle
 import voc
@@ -24,11 +25,12 @@ tf.flags.DEFINE_integer("img_size", "448", "sample image size")
 # resize 538x538 (538=448*1.2)
 tf.flags.DEFINE_integer("resize_size", "538", "size for augmentation")
 tf.flags.DEFINE_integer("final_size", "646", "final image size")
+tf.flags.DEFINE_integer("mp_num", "5", "numbers of multiprocessing")
 tf.flags.DEFINE_float("resize_factor", "1.2", "sample image size")
 tf.flags.DEFINE_string("filelist", "filelist.json", "filelist.json")
 tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base directory for data")
-tf.flags.DEFINE_string("train_img_dir", "./train_img2", "directory for training data")
-tf.flags.DEFINE_string("train_annot_dir", "./train_annot2", "directory for training data")
+tf.flags.DEFINE_string("train_img_dir", "./train_img", "directory for training data")
+tf.flags.DEFINE_string("train_annot_dir", "./train_annot", "directory for training data")
 tf.flags.DEFINE_string("test_img_dir", "./test_img", "directory for test data")
 tf.flags.DEFINE_string("test_annot_dir", "./test_annot", "directory for test data")
 
@@ -120,54 +122,92 @@ def preprocess_img(img):
   final_img = cv2.copyMakeBorder(resized_img, margin, margin, margin, margin, cv2.BORDER_CONSTANT)
   return final_img
 
-def build_train_data(data_info_list, obj2idx):
+def init_worker():
+  import signal
+  signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-  p = multiprocessing.Pool(4)
-  for data_infos in data_info_list:
+def work_train_func(args):
+  i, filelist, img_path, annot_path, obj2idx= args
+  print("mp[{}] start".format(i))
+
+  for j, filename in enumerate(filelist):
+    if j > 0 and j%100 == 0:
+      print('mp[{}] has done {} files.'.format(i, j))
+
+    # resize 538x538 (538=448*1.2)
+    jpg_file = os.path.join(img_path, filename + '.jpg')
+    img = cv2.imread(jpg_file)
+    final_img = preprocess_img(img)
+    cv2.imwrite(os.path.join(FLAGS.train_img_dir, filename + '.png'), final_img)
+
+    # build annotation
+    xml_file = os.path.join(annot_path, filename + '.xml')
+    with open(xml_file) as f:
+      xml_data = f.read()
+      annot_data = build_train_annot(xml_data, obj2idx)
+      np.save(os.path.join(FLAGS.train_annot_dir, filename), annot_data)
+  print("mp[{}] done".format(i))
+
+def work_test_func(args):
+  i, filelist, img_path, annot_path, obj2idx= args
+  print("mp[{}] start".format(i))
+
+  for j, filename in enumerate(filelist):
+    if j > 0 and j%100 == 0:
+      print('mp[{}] has done {} files.'.format(i, j))
+
+    jpg_file = os.path.join(img_path, filename + '.jpg')
+    img = cv2.imread(jpg_file)
+    cv2.imwrite(os.path.join(FLAGS.test_img_dir, filename + '.png'), img)
+
+    # build annotation
+    xml_file = os.path.join(annot_path, filename + '.xml')
+    with open(xml_file) as f:
+      xml_data = f.read()
+      annot_data = build_test_annot(xml_data, obj2idx)
+      np.save(os.path.join(FLAGS.test_annot_dir, filename), annot_data)
+  print("mp[{}] done".format(i))
+
+def build_data(data_info_list, obj2idx, work_func):
+
+  for i, data_infos in tqdm(enumerate(data_info_list), desc='build training data'):
     img_path    = data_infos['img_path']
     annot_path  = data_infos['annot_path']
     filelist    = data_infos['filelist']
 
-    for filename in tqdm(filelist, desc="538x538 resize build annotation..."):
+    print("[{}] processing on dataset:{}".format(i, img_path))
 
-      # resize 538x538 (538=448*1.2)
-      jpg_file = os.path.join(img_path, filename + '.jpg')
-      img = cv2.imread(jpg_file)
-      final_img = preprocess_img(img)
-      cv2.imwrite(os.path.join(FLAGS.train_img_dir, filename + '.png'), final_img)
+    # build data for mp
+    original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    pool = multiprocessing.Pool(FLAGS.mp_num)
+    signal.signal(signal.SIGINT, original_sigint_handler)
 
-      # build annotation
-      xml_file = os.path.join(annot_path, filename + '.xml')
-      with open(xml_file) as f:
-        xml_data = f.read()
-        annot_data = build_train_annot(xml_data, obj2idx)
-        np.save(os.path.join(FLAGS.train_annot_dir, filename), annot_data)
+    unit_size = int(np.ceil(len(filelist)/FLAGS.mp_num))
+    mpdata = [(i, filelist[i*unit_size:(i + 1)*unit_size], img_path, annot_path, obj2idx)for i in range(FLAGS.mp_num)]
+
+    start = datetime.now()
+    try:
+      pool.map_async(work_func, mpdata)
+    except KeyboardInterrupt:
+      print('keyboardInterrupt')
+      pool.terminate()
+      pool.join()
+
+    pool.close()
+    pool.join()
+
+    current = datetime.now()
+    print('\telapsed:' + str(current - start))
 
   return
+
+
+def build_train_data(data_info_list, obj2idx):
+  return build_data(data_info_list, obj2idx, work_train_func)
+
 
 def build_test_data(data_info_list, obj2idx):
-
-  for data_infos in data_info_list:
-    img_path    = data_info['img_path']
-    annot_path  = data_info['annot_path']
-    filelist    = data_info['filelist']
-
-    for filename in tqdm(filelist, desc="538x538 resize build annotation..."):
-
-      # resize 538x538 (538=448*1.2)
-      jpg_file = os.path.join(img_path, filename + '.jpg')
-      img = cv2.imread(jpg_file)
-      #final_img = preprocess_img(img)
-      cv2.imwrite(os.path.join(FLAGS.train_img_dir, filename + '.png'), final_img)
-
-      # build annotation
-      xml_file = os.path.join(annot_path, filename + '.xml')
-      with open(xml_file) as f:
-        xml_data = f.read()
-        annot_data = build_test_annot(xml_data, obj2idx)
-        np.save(os.path.join(FLAGS.train_annot_dir, filename), annot_data)
-
-  return
+  return build_data(data_info_list, obj2idx, work_test_func)
 
 def main(args):
 
