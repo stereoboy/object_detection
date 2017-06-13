@@ -48,3 +48,13 @@ def load_annots(train_annot_dir, filelist):
 
   return annots
 
+def tf_Print(on, x, summarize=50, message=""):
+  if on:
+    x = tf.Print(x, [x, tf.shape(x)], summarize=summarize, message=message)
+
+  return x
+
+def debug_print(on, *x):
+  if on:
+    print(x)
+  return x

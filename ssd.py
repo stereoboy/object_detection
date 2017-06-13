@@ -7,7 +7,7 @@ import json
 from datetime import datetime, date, time
 import cv2
 import sys
-import voc 
+import voc
 import utils
 import common
 import vgg_16
@@ -41,10 +41,13 @@ tf.flags.DEFINE_integer("num_threads", "6", "max thread number")
 tf.flags.DEFINE_string("filelist", "filelist.json", "filelist.json")
 tf.flags.DEFINE_string("save_dir", "ssd_checkpoints", "dir for checkpoints")
 tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base directory for data")
+tf.flags.DEFINE_string("log_dir", "ssd_checkpoints", "directory for log")
+tf.flags.DEFINE_string("log_name", "ssd", "directory for log")
 tf.flags.DEFINE_string("train_img_dir", "./train_img", "base directory for data")
 tf.flags.DEFINE_string("train_annot_dir", "./train_annot", "base directory for data")
 tf.flags.DEFINE_float("weight_decay", "0.0005", "weight decay for L2 regularization")
 tf.flags.DEFINE_float("init_stddev", "0.1", "stddev for initializer")
+tf.flags.DEFINE_bool("dbprint", "False", "option for debug print")
 
 slim = tf.contrib.slim
 
@@ -55,8 +58,8 @@ def visualization(img, annots, anchor_infos, idx2obj, palette, options=['draw_an
   vis_grid = np.zeros_like(img)
 
   # iterate layers
-  for i, (layer, anchor_scales) in enumerate(anchor_infos):
-    (h_num_grid, w_num_grid) = int(layer.get_shape()[1]), int(layer.get_shape()[2])
+  for i, (layer_dim, anchor_scales) in enumerate(anchor_infos):
+    (h_num_grid, w_num_grid) = layer_dim
     box_dim = (FLAGS.nclass + 4)*len(anchor_scales)
 
     annot = annots[i]
@@ -138,8 +141,8 @@ def build_feed_annots(_feed_annots, anchor_infos):
   feed_annots_list = []
 
   # iterate layers
-  for layer, anchor_scales in anchor_infos:
-    (h_num_grid, w_num_grid) = int(layer.get_shape()[1]), int(layer.get_shape()[2])
+  for layer_dim, anchor_scales in anchor_infos:
+    (h_num_grid, w_num_grid) = layer_dim
     box_dim = (FLAGS.nclass + 4)*len(anchor_scales)
 
     feed_annots = np.zeros((batch_size, h_num_grid, w_num_grid, box_dim), np.float32)
@@ -210,11 +213,11 @@ def build_feed_annots(_feed_annots, anchor_infos):
             reg_nw, reg_nh = np.log(nw/anchor_w), np.log(nh/anchor_h)
             feed_annots[i, y_loc, x_loc, b:e] = np.array((reg_cx, reg_cy, reg_nw, reg_nh), np.float32)
             if i == 0:
-              print('iou:', iou)
-              print('bbox:', bbox)
-              print('anchor_bbox:', anchor_bbox)
-              print((anchor_w, anchor_h), iou)
-              print('--------------------------------------')
+              utils.debug_print(FLAGS.dbprint, 'iou:', iou)
+              utils.debug_print(FLAGS.dbprint, 'bbox:', bbox)
+              utils.debug_print(FLAGS.dbprint, 'anchor_bbox:', anchor_bbox)
+              utils.debug_print(FLAGS.dbprint, (anchor_w, anchor_h), iou)
+              utils.debug_print(FLAGS.dbprint, '--------------------------------------')
 
 
           offset += (FLAGS.nclass + 4)
@@ -260,12 +263,9 @@ def model_ssd(frontend):
                       weights_regularizer=slim.l2_regularizer(FLAGS.weight_decay),
                       #biases_initializer=tf.zeros_initializer(),
                       data_format='NCHW'):
-    frontend = tf.Print(frontend, [frontend, tf.shape(frontend)[1:]], summarize=49, message="frontend:")
     # 10 x 10
     conv6_1 = slim.conv2d(frontend, 256, [1, 1], stride=1, padding='SAME', scope='conv6_1')
     conv6_2 = slim.conv2d(conv6_1, 512, [3, 3], stride=2, padding='SAME', scope='conv6_2')
-
-    conv6_2 = tf.Print(conv6_2, [conv6_2, tf.shape(conv6_2)[1:]], summarize=49, message="conv6_2:")
 
     # 5 x 5
     conv7_1 = slim.conv2d(conv6_2, 256, [1, 1], stride=1, padding='SAME', scope='conv7_1')
@@ -279,7 +279,6 @@ def model_ssd(frontend):
     conv9_1 = slim.conv2d(conv8_2, 256, [1, 1], stride=1, padding='SAME', scope='conv9_1')
     conv9_2 = slim.conv2d(conv9_1, 512, [3, 3], stride=2, padding='VALID', scope='conv9_2')
 
-    conv9_2 = tf.Print(conv9_2, [conv9_2, tf.shape(conv9_2)[1:]], summarize=49, message="conv9_2:")
   return conv6_2, conv7_2, conv8_2, conv9_2
 
 def model_backend(out_layers, anchor_scales_list):
@@ -317,40 +316,37 @@ def calculate_loss(ys, outs, anchor_scales_list):
   for i in range(len(ys)):
     y, out, anchor_scales = ys[i], outs[i], anchor_scales_list[i]
 
-    offset = 0
-    print("i:",i, y, out)
-    for j, anchor_scale in enumerate(anchor_scales):
-      print("j:",j)
-      class_y = y[:, :, :, offset:offset + FLAGS.nclass]
-      class_y = tf.reshape(class_y, shape=[FLAGS.batch_size, -1, FLAGS.nclass])
+    with tf.name_scope('anchors{}'.format(i)):
+      offset = 0
+      print("i:",i, y, out)
+      for j, anchor_scale in enumerate(anchor_scales):
+        with tf.name_scope('slice{}'.format(j)):
+          class_y = y[:, :, :, offset:offset + FLAGS.nclass]
+          class_y = tf.reshape(class_y, shape=[FLAGS.batch_size, -1, FLAGS.nclass])
 
-      class_out = out[:, :, :, offset:offset + FLAGS.nclass]
-      class_out = tf.reshape(class_out, shape=[FLAGS.batch_size, -1, FLAGS.nclass])
+          class_out = out[:, :, :, offset:offset + FLAGS.nclass]
+          class_out = tf.reshape(class_out, shape=[FLAGS.batch_size, -1, FLAGS.nclass])
 
-      coord_y = y[:, :, :, offset + FLAGS.nclass: offset + FLAGS.nclass + 4]
-      coord_y = tf.reshape(coord_y, shape=[FLAGS.batch_size, -1, 4])
+          coord_y = y[:, :, :, offset + FLAGS.nclass: offset + FLAGS.nclass + 4]
+          coord_y = tf.reshape(coord_y, shape=[FLAGS.batch_size, -1, 4])
 
-      coord_out = out[:, :, :, offset + FLAGS.nclass: offset + FLAGS.nclass + 4]
-      coord_out = tf.reshape(coord_out, shape=[FLAGS.batch_size, -1, 4])
+          coord_out = out[:, :, :, offset + FLAGS.nclass: offset + FLAGS.nclass + 4]
+          coord_out = tf.reshape(coord_out, shape=[FLAGS.batch_size, -1, 4])
 
-      #class_out = tf.Print(class_out, [class_out, tf.shape(class_out)[1:]], summarize=200, message="class_out{}_{}:".format(i, j))
-      flat_class_y.append(class_y)
-      flat_class_out.append(class_out)
-      flat_coord_y.append(coord_y)
-      flat_coord_out.append(coord_out)
+          #class_out = utils.tf_Print(class_out, [class_out, tf.shape(class_out)[1:]], summarize=200, message="class_out{}_{}:".format(i, j))
+          flat_class_y.append(class_y)
+          flat_class_out.append(class_out)
+          flat_coord_y.append(coord_y)
+          flat_coord_out.append(coord_out)
 
-      offset += (FLAGS.nclass + 4)
+        offset += (FLAGS.nclass + 4)
 
-  flat_class_y = tf.concat(flat_class_y, axis=1)
-  flat_class_y = tf.Print(flat_class_y, [flat_class_y, tf.shape(flat_class_y)[1:]], summarize=200, message="flat_class_y:")
-  flat_class_out = tf.concat(flat_class_out, axis=1)
-  flat_class_out = tf.Print(flat_class_out, [flat_class_out, tf.shape(flat_class_out)[1:]], summarize=200, message="flat_class_out:")
-  flat_coord_y = tf.concat(flat_coord_y, axis=1)
-  flat_coord_out = tf.concat(flat_coord_out, axis=1)
-  print('flat_class_y', flat_class_y)
-  print('flat_class_out', flat_class_out)
-  print('flat_coord_y', flat_coord_y)
-  print('flat_coord_out', flat_coord_out)
+  flat_class_y = tf.concat(flat_class_y, axis=1, name='flat_class_y')
+  flat_class_y = utils.tf_Print(FLAGS.dbprint, flat_class_y, summarize=200, message="flat_class_y:")
+  flat_class_out = tf.concat(flat_class_out, axis=1, name='flat_class_out')
+  flat_class_out = utils.tf_Print(FLAGS.dbprint, flat_class_out, summarize=200, message="flat_class_out:")
+  flat_coord_y = tf.concat(flat_coord_y, axis=1, name='flat_coord_y')
+  flat_coord_out = tf.concat(flat_coord_out, axis=1, name='flat_coord_out')
 
   #positive_mask = tf.reduce_max(flat_class_y, axis=2) > 0.5
   #negative_mask = tf.logical_not(positive_mask)
@@ -362,67 +358,68 @@ def calculate_loss(ys, outs, anchor_scales_list):
 #  positive_num  = tf.reduce_sum(positive_mask, axis=1)
 #  negative_mask = tf.cast(negative_mask, dtype=tf.float32)
 #  negative_num  = tf.reduce_sum(negative_mask, axis=1)
-  negative_mask = flat_class_y[:, :, 0]
-  positive_mask = 1.0 - negative_mask
+  with tf.name_scope('calculate_masks'):
+    negative_mask = flat_class_y[:, :, 0]
+    positive_mask = 1.0 - negative_mask
 
-  positive_num  = tf.reduce_sum(positive_mask, axis=1)
-  negative_num  = tf.reduce_sum(negative_mask, axis=1)
+    positive_num  = tf.reduce_sum(positive_mask, axis=1, name='positive_num')
+    negative_num  = tf.reduce_sum(negative_mask, axis=1)
 
-  print('positive_mask', positive_mask)
-  print('negative_mask', negative_mask)
-  print('positive_num', positive_num)
-  print('negative_num', negative_num)
+    negative_num = tf.cast(tf.minimum(negative_num, positive_num*FLAGS.negative_ratio), dtype=tf.int32, name='negative_num')
 
-  negative_num = tf.cast(tf.minimum(negative_num, positive_num*FLAGS.negative_ratio), dtype=tf.int32)
-  negative_num += 1 #dummy to prevent set k=zero in top_k
+    positive_num = utils.tf_Print(FLAGS.dbprint, positive_num, summarize=49, message="positive_num:")
+    negative_num = utils.tf_Print(FLAGS.dbprint, negative_num, summarize=49, message="negative_num:")
 
-  conf_loss = tf.nn.softmax_cross_entropy_with_logits(logits=flat_class_out, labels=flat_class_y)
- 
-  print('conf_loss:', conf_loss)
-  conf_loss = tf.Print(conf_loss, [conf_loss, tf.shape(conf_loss)[1:]], summarize=49, message="conf_loss:")
+    positive_num += 1 #dummy to prevent divied by zero
+    negative_num += 1 #dummy to prevent set k=zero in top_k
 
-  positive_num = tf.Print(positive_num, [positive_num, tf.shape(positive_num)], summarize=49, message="positive_num:")
-  negative_num = tf.Print(negative_num, [negative_num, tf.shape(negative_num)], summarize=49, message="negative_num:")
+  with tf.name_scope('conf_loss'):
+    conf_loss = tf.nn.softmax_cross_entropy_with_logits(logits=flat_class_out, labels=flat_class_y)
+
+    conf_loss = utils.tf_Print(FLAGS.dbprint, conf_loss, summarize=49, message="conf_loss:")
+
   negative_loss = []
-  for i in range(FLAGS.batch_size):
-    # use minus for sort
-    values, indices = tf.nn.top_k(-(conf_loss[i]*negative_mask[i]), k=negative_num[i])
-    #values = tf.Print(values, [values, tf.shape(values)], summarize=49, message="values{}:".format(i))
-    # recover sign by minus
-    negative_loss.append(tf.reduce_sum(-values))
-  negative_loss = tf.stack(negative_loss)
+  with tf.name_scope('negative_conf_loss'):
+    for i in range(FLAGS.batch_size):
+      # use minus for sort
+      with tf.name_scope('top_k{}'.format(i)):
+        values, indices = tf.nn.top_k(-(conf_loss[i]*negative_mask[i]), k=negative_num[i])
+        #values = utils.tf_Print(FLAGS.dbprint, values, summarize=49, message="values{}:".format(i))
+        # recover sign by minus
+        negative_loss.append(tf.reduce_sum(-values))
+    negative_loss = tf.stack(negative_loss)
 
-  negative_loss = tf.Print(negative_loss, [negative_loss, tf.shape(negative_loss)], summarize=49, message="negative_loss:")
+    negative_loss = utils.tf_Print(FLAGS.dbprint, negative_loss, summarize=49, message="negative_loss:")
   #negative_loss /= FLAGS.batch_size
 
-  loc_loss = smooth_l1_loss(flat_coord_out - flat_coord_y)
+  with tf.name_scope('positive_conf_loss'):
+    positive_loss = tf.reduce_sum(conf_loss*positive_mask, axis=1)
+    positive_loss = utils.tf_Print(FLAGS.dbprint, positive_loss, summarize=49, message="positive_loss:")
 
-  loss = 0.0
+  with tf.name_scope('coord_loss'):
+    loc_loss = smooth_l1_loss(flat_coord_out - flat_coord_y)
+    coord_term = tf.reduce_sum(loc_loss*tf.expand_dims(positive_mask, axis=2), axis=[1, 2])
+    coord_term = utils.tf_Print(FLAGS.dbprint, coord_term, summarize=49, message="coord_term:")
 
-  loss += tf.reduce_sum(conf_loss*positive_mask, axis=1)
-  loss = tf.Print(loss, [loss, tf.shape(loss)[1:]], summarize=49, message="lossA:")
+  loss = positive_loss + negative_loss + coord_term
+  loss = utils.tf_Print(FLAGS.dbprint, loss, summarize=49, message="lossC:")
 
-  loss += tf.reduce_sum(loc_loss*tf.expand_dims(positive_mask, axis=2), axis=[1, 2])
-  loss = tf.Print(loss, [loss, tf.shape(loss)[1:]], summarize=49, message="lossB:")
-  
-  loss += negative_loss
-  loss = tf.Print(loss, [loss, tf.shape(loss)[1:]], summarize=49, message="lossC:")
-  print(loss)
-
-  positive_num += 1 #dummy to prevent divied by zero
   loss = tf.div(loss, positive_num)
 # code below is not working. it makes gradients nan
 #  cond = positive_num > 0.0
-#  cond = tf.Print(cond, [cond, tf.shape(cond)], summarize=49, message="cond:")
+#  cond = utils.tf_Print(cond, [cond, tf.shape(cond)], summarize=49, message="cond:")
 #  a = tf.div(loss, positive_num)
-#  a = tf.Print(a, [a, tf.shape(a)], summarize=49, message="a:")
+#  a = utils.tf_Print(a, [a, tf.shape(a)], summarize=49, message="a:")
 #  b = tf.zeros_like(loss)
-#  b = tf.Print(b, [b, tf.shape(b)], summarize=49, message="b:")
+#  b = utils.tf_Print(b, [b, tf.shape(b)], summarize=49, message="b:")
 #  loss = tf.where(cond, a, b)
-  loss = tf.Print(loss, [loss, tf.shape(loss)[1:]], summarize=49, message="lossD:")
-  print(loss)
+  loss = utils.tf_Print(FLAGS.dbprint, loss, summarize=49, message="lossD:")
   loss = tf.reduce_mean(loss)
-  print(loss)
+
+  tf.summary.scalar('positive_term', tf.reduce_mean(positive_loss))
+  tf.summary.scalar('negative_term', tf.reduce_mean(negative_loss))
+  tf.summary.scalar('coord_term', tf.reduce_mean(coord_term))
+
   return loss
 
 def get_opt(loss, scope):
@@ -459,18 +456,18 @@ def get_opt(loss, scope):
   opt = optimizer.minimize(loss, var_list=var_list, global_step=global_step)
 
 #  learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
-#  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+#  learning_rate = utils.tf_Print(learning_rate, [learning_rate], message="learning_rate:")
 #  optimizer = tf.train.AdamOptimizer(learning_rate).minimize(loss, var_list=var_list)
 #
 #  learning_rate = tf.Variable(
 #      float(1e-3), trainable=False, dtype=tf.float32)
 #  lr_decay_op1 = learning_rate.assign(1e-3)
 #  lr_decay_op2 = learning_rate.assign(1e-4)
-#  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+#  learning_rate = utils.tf_Print(learning_rate, [learning_rate], message="learning_rate:")
 
 #  learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
 #                                                 10, 0.9995, staircase=True)
-#  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
+#  learning_rate = utils.tf_Print(learning_rate, [learning_rate], message="learning_rate:")
 #  optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss,
 #                                                                var_list=var_list,
 #                                                                global_step=global_step)
@@ -498,23 +495,27 @@ def main(args):
   _G_MEAN = 116.78
   _B_MEAN = 103.94
 
-  with tf.Graph().as_default(): 
+  log_filename = os.path.join(FLAGS.log_dir, FLAGS.log_name)
+  print("summary_log:", log_filename)
+  writer = tf.summary.FileWriter(log_filename)
+
+  with tf.Graph().as_default():
     mean = tf.constant(np.array((_R_MEAN, _G_MEAN, _B_MEAN), dtype=np.float32))
 
     drop_prob = tf.placeholder(tf.float32)
-    _x = tf.placeholder(tf.float32, [None, FLAGS.img_orig_size, FLAGS.img_orig_size, FLAGS.channel])
-    _st = tf.placeholder(tf.float32, [None, 4])
-    _flip = tf.placeholder(tf.bool, [None])
+    _x = tf.placeholder(tf.float32, [None, FLAGS.img_orig_size, FLAGS.img_orig_size, FLAGS.channel], name='raw_input')
+    _st = tf.placeholder(tf.float32, [None, 4], name='scale_translation_seed')
+    _flip = tf.placeholder(tf.bool, [None], name='flip_seed')
 
-    with tf.name_scope("augmentation"):
+    with tf.name_scope('augmentation'):
       aug = improc.augment_scale_translate_flip(_x, FLAGS.img_size, _st, _flip, FLAGS.batch_size)
       aug = improc.augment_br_sat_hue_cont(aug)
-      with tf.name_scope("mean_subtraction"):
+      with tf.name_scope('mean_subtraction'):
         mean = tf.constant(np.array((_R_MEAN, _G_MEAN, _B_MEAN), dtype=np.float32))
         x = tf.cast(aug, dtype=tf.float32) - mean
       x = improc.augment_gaussian_noise(x)
 
-    x = tf.transpose(x, perm=[0, 3, 1, 2])
+    x = tf.transpose(x, perm=[0, 3, 1, 2], name='augmented_input')
 
     print("0. input image setup is done.")
 
@@ -540,39 +541,48 @@ def main(args):
     print('layers', layers)
 
     anchor_scales_list = init_anchor_scales(len(out_layers))
-    with tf.variable_scope('ssd') as scope:
+    with tf.variable_scope('ssd_backend') as scope:
       out_layers = model_backend(out_layers, anchor_scales_list)
+      layer_dims = [(int(layer.get_shape()[1]), int(layer.get_shape()[2])) for layer in out_layers] 
 
-    anchor_infos = list(zip(out_layers, anchor_scales_list))
+    anchor_infos = list(zip(layer_dims, anchor_scales_list))
     print(list(anchor_infos))
     print("1. network setup is done.")
 
-
-
-    _y = []
-    for layer, anchor_scale in anchor_infos:
-      (h_num_grid, w_num_grid) = layer.get_shape()[1:3]
-      box_dim = (FLAGS.nclass + 4)*len(anchor_scale)
-      ph = tf.placeholder(tf.float32, [FLAGS.batch_size, h_num_grid, w_num_grid, box_dim])
-      _y.append(ph)
+    with tf.name_scope('raw_label'):
+      _y = []
+      for layer_dim, anchor_scale in anchor_infos:
+        (h_num_grid, w_num_grid) = layer_dim
+        box_dim = (FLAGS.nclass + 4)*len(anchor_scale)
+        ph = tf.placeholder(tf.float32, [FLAGS.batch_size, h_num_grid, w_num_grid, box_dim])
+        _y.append(ph)
     print("2. label setup is done.")
 
-    loss = calculate_loss(_y, out_layers, anchor_scales_list)
-    regularization_loss = tf.losses.get_regularization_loss(scope='ssd')
-    total_loss = loss + regularization_loss
+    with tf.name_scope('cal_loss'):
+      loss = calculate_loss(_y, out_layers, anchor_scales_list)
+      regularization_loss = tf.losses.get_regularization_loss(scope='ssd')
+      total_loss = loss + regularization_loss
+
+      tf.summary.scalar('total_loss', total_loss)
+      tf.summary.scalar('loss', loss)
+      tf.summary.scalar('regularization_loss', regularization_loss)
     print("3. loss setup is done.")
 
+    epoch_step, epoch_update = utils.get_epoch()
     var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
     print("==get_opt()============================")
     for item in var_list:
       print(item.name)
-    opt, lr_decay_op1, lr_decay_op2 = get_opt(total_loss, 'ssd')
+    with tf.name_scope('train'):
+      opt, lr_decay_op1, lr_decay_op2 = get_opt(total_loss, 'ssd')
     print("4. optimizer setup is done.")
 
-    epoch_step, epoch_update = utils.get_epoch()
     init_op = tf.group(tf.global_variables_initializer(),
                      tf.local_variables_initializer())
     print("5. misc setup is done.")
+
+    merged = tf.summary.merge_all()
+    print("6. summary setup is  done.")
 
     config=tf.ConfigProto()
     #config.log_device_placement=True
@@ -582,6 +592,7 @@ def main(args):
 
       sess.run(init_op)
 
+      writer.add_graph(sess.graph)
       saver = tf.train.Saver()
       checkpoint = tf.train.latest_checkpoint(FLAGS.save_dir)
       print("checkpoint: %s" % checkpoint)
@@ -599,7 +610,7 @@ def main(args):
         print("#####################################################################")
         print("epoch: {}".format(epoch))
 
-        #random.shuffle(filelist)
+        random.shuffle(filelist)
         max_itr = len(filelist)//FLAGS.batch_size
         for itr in range(0, max_itr):
           print("===================================================================")
@@ -610,7 +621,7 @@ def main(args):
           b = itr*FLAGS.batch_size
           e = b + FLAGS.batch_size
           _batch = filelist[b:e]
-          print(_batch)
+          utils.debug_print(FLAGS.dbprint, _batch)
 
           feed_imgs = utils.load_imgs(FLAGS.train_img_dir, _batch)
           _feed_annots = utils.load_annots(FLAGS.train_annot_dir, _batch)
@@ -627,15 +638,16 @@ def main(args):
 #            print(ph)
 #            print(feed_annots.shape)
             feed_dict[ph] = feed_annots
-          test = tf.get_default_graph().get_tensor_by_name("ssd/backend0/weights:0")
-          test = tf.get_default_graph().get_tensor_by_name("ssd/backend0/biases:0")
+#          test = tf.get_default_graph().get_tensor_by_name("ssd/backend0/weights:0")
+#          test = tf.get_default_graph().get_tensor_by_name("ssd/backend0/biases:0")
 
 #          print("test before:", test.eval())
 #          var_grad = tf.gradients(loss, [test])[0]
 #          var_grad_val = sess.run([var_grad], feed_dict=feed_dict)
 #          print("test var_grad:", np.sum(var_grad_val))
 #          print("test var_grad:", var_grad_val)
-          _, total_loss_val, loss_val, regularization_loss_val = sess.run([opt, total_loss, loss, regularization_loss], feed_dict=feed_dict)
+          summary, _, total_loss_val, loss_val, regularization_loss_val = sess.run([merged, opt, total_loss, loss, regularization_loss], feed_dict=feed_dict)
+          writer.add_summary(summary, step)
 #          print("test after:", test.eval())
 
           print("total_loss: {}".format(total_loss_val))
@@ -669,10 +681,11 @@ def main(args):
 
             #compare(feed_annots_list[0], out_val[0])
 
-          if itr %100 == 0: 
-            print("#######################################################")
-            saver.save(sess, checkpoint)
+        print("#######################################################")
         _ = sess.run(epoch_update)
+        saver.save(sess, checkpoint)
+
+  writer.close()
 
 if __name__ == "__main__":
   tf.app.run()
