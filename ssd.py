@@ -39,6 +39,7 @@ tf.flags.DEFINE_integer("img_size", "300", "sample image size")
 tf.flags.DEFINE_integer("img_vis_size", "428", "sample image size")
 tf.flags.DEFINE_integer("num_threads", "6", "max thread number")
 tf.flags.DEFINE_string("filelist", "filelist.json", "filelist.json")
+tf.flags.DEFINE_string("balanced_filelist", "balanced.json", "normalized filelist")
 tf.flags.DEFINE_string("save_dir", "ssd_checkpoints", "dir for checkpoints")
 tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base directory for data")
 tf.flags.DEFINE_string("log_dir", "ssd_checkpoints", "directory for log")
@@ -52,7 +53,7 @@ tf.flags.DEFINE_bool("dbprint", "False", "option for debug print")
 slim = tf.contrib.slim
 
 def visualization(img, annots, anchor_infos, idx2obj, palette, options=['draw_anchor', 'target']):
-  print("visualization()")
+  #print("visualization()")
   h, w = img.shape[:2]
 
   vis_grid = np.zeros_like(img)
@@ -115,7 +116,7 @@ def visualization(img, annots, anchor_infos, idx2obj, palette, options=['draw_an
 
             #vis_grid= cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
             if 'draw_anchor' in options:
-              img = cv2.rectangle(img, anchor_b, anchor_e, (0, 0, 255), 3)
+              img = cv2.rectangle(img, anchor_b, anchor_e, (0, 0, 255), 1)
             img = cv2.rectangle(img, b, e, color, 6)
             img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
             img = cv2.circle(img, (int(cx*w), int(cy*h)), 4, color, -1)
@@ -451,8 +452,8 @@ def get_opt(loss, scope):
   lr_decay_op1 = tf.assign(learning_rate, 1e-4)
   lr_decay_op2 = tf.assign(learning_rate, 1e-5)
   learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
-#  optimizer = tf.train.MomentumOptimizer(FLAGS.learning_rate, FLAGS.momentum)
-  optimizer = tf.train.AdamOptimizer(learning_rate)
+  optimizer = tf.train.MomentumOptimizer(learning_rate, FLAGS.momentum)
+#  optimizer = tf.train.AdamOptimizer(learning_rate)
   opt = optimizer.minimize(loss, var_list=var_list, global_step=global_step)
 
 #  learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
@@ -483,8 +484,8 @@ def main(args):
   colormap, palette = voc.build_colormap_lookup(21)
   idx2obj = voc.idx2obj
 
-  with open(FLAGS.filelist, "r") as f:
-    filelist = json.load(f)
+  with open(FLAGS.balanced_filelist, "r") as f:
+    filelist = json.load(f)['train']
 
   if not os.path.exists(FLAGS.save_dir):
     os.makedirs(FLAGS.save_dir)
@@ -528,8 +529,8 @@ def main(args):
     vgg_outs = end_points['vgg_16/conv5/conv5_3']
     out_layers.append(end_points['vgg_16/conv5/conv5_3'])
 
-    print('vgg_outs', vgg_outs, vgg_outs.get_shape())
-    print('end_points', end_points)
+    #print('vgg_outs', vgg_outs, vgg_outs.get_shape())
+    #print('end_points', end_points)
     init_fn = slim.assign_from_checkpoint_fn(
         os.path.join(vgg_16.checkpoints_dir, 'vgg_16.ckpt'),
         slim.get_model_variables('vgg_16'))
@@ -543,7 +544,7 @@ def main(args):
     anchor_scales_list = init_anchor_scales(len(out_layers))
     with tf.variable_scope('ssd_backend') as scope:
       out_layers = model_backend(out_layers, anchor_scales_list)
-      layer_dims = [(int(layer.get_shape()[1]), int(layer.get_shape()[2])) for layer in out_layers] 
+      layer_dims = [(int(layer.get_shape()[1]), int(layer.get_shape()[2])) for layer in out_layers]
 
     anchor_infos = list(zip(layer_dims, anchor_scales_list))
     print(list(anchor_infos))
@@ -653,6 +654,7 @@ def main(args):
           print("total_loss: {}".format(total_loss_val))
           print("loss: {}, regularization_loss: {}".format(loss_val, regularization_loss_val))
           if itr % 5 == 0:
+            #print("input filename:{}".format(_batch[0]))
             data_val, aug_val, label_val, out_val = sess.run([_x, aug, _y, out_layers], feed_dict=feed_dict)
             #label_val = sess.run(_y, feed_dict=feed_dict)
             #out_val = sess.run(out_layers, feed_dict=feed_dict)
@@ -663,6 +665,7 @@ def main(args):
             orig_img = improc.visualization_orig(orig_img, _feed_annots[0], idx2obj, palette)
             orig_img = cv2.rectangle(orig_img, (cr[1], cr[0]), (cr[3], cr[2]), (255,255,255), 2)
             orig_img = cv2.resize(orig_img, (FLAGS.img_vis_size, FLAGS.img_vis_size))
+            orig_img = cv2.putText(orig_img, _batch[0], (15, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
 
             aug_img = cv2.cvtColor(aug_val[0], cv2.COLOR_RGB2BGR)
             out_img = aug_img.copy()
