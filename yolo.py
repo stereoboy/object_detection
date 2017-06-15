@@ -40,6 +40,7 @@ tf.flags.DEFINE_integer("img_orig_size", "646", "sample image size")
 tf.flags.DEFINE_integer("img_size", "448", "sample image size")
 tf.flags.DEFINE_integer("num_threads", "6", "max thread number")
 tf.flags.DEFINE_string("filelist", "filelist.json", "filelist.json")
+tf.flags.DEFINE_string("balanced_filelist", "balanced.json", "normalized filelist")
 tf.flags.DEFINE_string("save_dir", "yolo_checkpoints", "dir for checkpoints")
 tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base directory for data")
 tf.flags.DEFINE_string("train_img_dir", "./train_img", "base directory for data")
@@ -606,8 +607,8 @@ def main(args):
 
   pretrained = utils.load_pretrained("./VGG_16.npy")
 
-  with open(FLAGS.filelist, "r") as f:
-    filelist = json.load(f)
+  with open(FLAGS.balanced_filelist, "r") as f:
+    filelist = json.load(f)['train']
 
   img_list = [os.path.join(FLAGS.train_img_dir, filename + ".png") for filename in filelist]
   annot_list = [os.path.join(FLAGS.train_annot_dir, filename + ".label") for filename in filelist]
@@ -724,6 +725,7 @@ def main(args):
           orig_img = improc.visualization_orig(orig_img, _feed_annots[0], idx2obj, palette)
           orig_img = cv2.rectangle(orig_img, (cr[1], cr[0]), (cr[3], cr[2]), (255,255,255), 2)
           orig_img = cv2.resize(orig_img, (FLAGS.img_size, FLAGS.img_size))
+          orig_img = cv2.putText(orig_img, _batch[0], (15, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
 
           aug_img = cv2.cvtColor(aug_val[0], cv2.COLOR_RGB2BGR)
           out_img = aug_img.copy()
