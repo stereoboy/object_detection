@@ -613,6 +613,11 @@ def main(args):
 
         random.shuffle(filelist)
         max_itr = len(filelist)//FLAGS.batch_size
+
+        img_save_dir = os.path.join(FLAGS.save_dir, "epoch_%03d"%epoch)
+        if not os.path.exists(img_save_dir):
+          os.mkdir(img_save_dir)
+
         for itr in range(0, max_itr):
           print("===================================================================")
           print("[{}] {}/{}".format(epoch, itr, max_itr))
@@ -648,12 +653,11 @@ def main(args):
 #          print("test var_grad:", np.sum(var_grad_val))
 #          print("test var_grad:", var_grad_val)
           summary, _, total_loss_val, loss_val, regularization_loss_val = sess.run([merged, opt, total_loss, loss, regularization_loss], feed_dict=feed_dict)
-          writer.add_summary(summary, step)
 #          print("test after:", test.eval())
 
           print("total_loss: {}".format(total_loss_val))
           print("loss: {}, regularization_loss: {}".format(loss_val, regularization_loss_val))
-          if itr % 5 == 0:
+          if itr % 100 == 0:
             #print("input filename:{}".format(_batch[0]))
             data_val, aug_val, label_val, out_val = sess.run([_x, aug, _y, out_layers], feed_dict=feed_dict)
             #label_val = sess.run(_y, feed_dict=feed_dict)
@@ -676,8 +680,11 @@ def main(args):
             out_val = [out[0] for out in out_val]
             out_img = cv2.resize(out_img, (FLAGS.img_vis_size, FLAGS.img_vis_size))
             out_img = visualization(out_img, out_val, anchor_infos, idx2obj, palette, options=[])
-            cv2.imshow('input', improc.img_listup([orig_img, aug_img, out_img]))
+            #cv2.imshow('input', improc.img_listup([orig_img, aug_img, out_img]))
+            img_save_path = os.path.join(img_save_dir, 'result_%05d.png'%(itr))
+            cv2.imwrite(img_save_path, improc.img_listup([orig_img, aug_img, out_img]))
 
+          writer.add_summary(summary, step)
           key = cv2.waitKey(5)
           if key == 27:
             sys.exit()
