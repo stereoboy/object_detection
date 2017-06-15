@@ -41,6 +41,7 @@ tf.flags.DEFINE_integer("img_size", "416", "sample image size")
 tf.flags.DEFINE_integer("img_vis_size", "428", "sample image size")
 tf.flags.DEFINE_integer("num_threads", "6", "max thread number")
 tf.flags.DEFINE_string("filelist", "filelist.json", "filelist.json")
+tf.flags.DEFINE_string("balanced_filelist", "balanced.json", "normalized filelist")
 tf.flags.DEFINE_string("save_dir", "yolov2_checkpoints", "dir for checkpoints")
 tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base directory for data")
 tf.flags.DEFINE_string("log_dir", "yolov2_checkpoints", "directory for log")
@@ -103,7 +104,7 @@ def visualization(img, annot, anchor_scales, idx2obj, palette, options=['draw_an
 
           #vis_grid= cv2.rectangle(vis_grid, grid_b, grid_e, color, -1)
           if 'draw_anchor' in options:
-            img = cv2.rectangle(img, anchor_b, anchor_e, (0, 0, 255), 3)
+            img = cv2.rectangle(img, anchor_b, anchor_e, (0, 0, 255), 1)
           img = cv2.rectangle(img, b, e, color, 5)
           img = cv2.putText(img, name, b, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
           img = cv2.circle(img, (int(cx*w_grid), int(cy*h_grid)), 4, color, -1)
@@ -376,8 +377,8 @@ def main(args):
   colormap, palette = voc.build_colormap_lookup(21)
   idx2obj = voc.idx2obj
 
-  with open(FLAGS.filelist, "r") as f:
-    filelist = json.load(f)
+  with open(FLAGS.balanced_filelist, "r") as f:
+    filelist = json.load(f)['train']
 
   if not os.path.exists(FLAGS.save_dir):
     os.makedirs(FLAGS.save_dir)
@@ -557,6 +558,7 @@ def main(args):
             orig_img = improc.visualization_orig(orig_img, _feed_annots[0], idx2obj, palette)
             orig_img = cv2.rectangle(orig_img, (cr[1], cr[0]), (cr[3], cr[2]), (255,255,255), 2)
             orig_img = cv2.resize(orig_img, (FLAGS.img_vis_size, FLAGS.img_vis_size))
+            orig_img = cv2.putText(orig_img, _batch[0], (15, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
 
             aug_img = cv2.cvtColor(aug_val[0], cv2.COLOR_RGB2BGR)
             out_img = aug_img.copy()
