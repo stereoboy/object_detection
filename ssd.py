@@ -26,7 +26,9 @@ tf.flags.DEFINE_integer("nclass", "21", "class num")
 tf.flags.DEFINE_float("iou_threshold", "0.5", "threshold for jaccard overlay(iou)")
 tf.flags.DEFINE_float("confidence", "0.1", "confidence limit")
 tf.flags.DEFINE_float("negative_ratio", "3.0", "ratio between negative and positive samples")
-tf.flags.DEFINE_float("learning_rate", "1e-3", "Learning rate for Adam Optimizer")
+tf.flags.DEFINE_float("learning_rate0", "1e-3", "Learning rate for Adam Optimizer")
+tf.flags.DEFINE_float("learning_rate1", "1e-4", "Learning rate for Adam Optimizer")
+tf.flags.DEFINE_float("learning_rate2", "1e-5", "Learning rate for Adam Optimizer")
 tf.flags.DEFINE_float("momentum", "0.9", "momentum for Momentum Optimizer")
 tf.flags.DEFINE_float("eps", "1e-5", "epsilon for various operation")
 tf.flags.DEFINE_float("beta1", "0.5", "beta1 for Adam optimizer")
@@ -42,7 +44,7 @@ tf.flags.DEFINE_string("filelist", "filelist.json", "filelist.json")
 tf.flags.DEFINE_string("balanced_filelist", "balanced.json", "normalized filelist")
 tf.flags.DEFINE_string("save_dir", "ssd_checkpoints", "dir for checkpoints")
 tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base directory for data")
-tf.flags.DEFINE_string("log_dir", "ssd_checkpoints", "directory for log")
+tf.flags.DEFINE_string("log_dir", "ssd_logs", "directory for log")
 tf.flags.DEFINE_string("log_name", "ssd", "directory for log")
 tf.flags.DEFINE_string("train_img_dir", "./train_img", "base directory for data")
 tf.flags.DEFINE_string("train_annot_dir", "./train_annot", "base directory for data")
@@ -448,9 +450,13 @@ def get_opt(loss, scope):
 
 #  learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
 #                                                 1, 0.998, staircase=True)
-  learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
-  lr_decay_op1 = tf.assign(learning_rate, 1e-4)
-  lr_decay_op2 = tf.assign(learning_rate, 1e-5)
+#  learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
+#  lr_decay_op1 = tf.assign(learning_rate, 1e-4)
+#  lr_decay_op2 = tf.assign(learning_rate, 1e-5)
+
+  boundaries = [40000, 50000]
+  values = [FLAGS.learning_rate0, FLAGS.learning_rate1, FLAGS.learning_rate2]
+  learning_rate = tf.train.piecewise_constant(global_step, boundaries, values)
   learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
   optimizer = tf.train.MomentumOptimizer(learning_rate, FLAGS.momentum)
 #  optimizer = tf.train.AdamOptimizer(learning_rate)
@@ -473,7 +479,7 @@ def get_opt(loss, scope):
 #                                                                var_list=var_list,
 #                                                                global_step=global_step)
 
-  return opt, lr_decay_op1, lr_decay_op2
+  return opt, 0, 0
 #  return tf.train.AdamOptimizer(0.0001).minimize(loss)
 #  optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate, beta1=FLAGS.beta1)
 #  grads = optimizer.compute_gradients(loss, var_list=var_list)
@@ -489,6 +495,8 @@ def main(args):
 
   if not os.path.exists(FLAGS.save_dir):
     os.makedirs(FLAGS.save_dir)
+  if not os.path.exists(FLAGS.log_dir):
+    os.makedirs(FLAGS.log_dir)
 
   vgg_16.setup_vgg_16()
 
@@ -531,7 +539,7 @@ def main(args):
 
     #print('vgg_outs', vgg_outs, vgg_outs.get_shape())
     #print('end_points', end_points)
-    init_fn = slim.assign_from_checkpoint_fn(
+    init_vgg_16_fn = slim.assign_from_checkpoint_fn(
         os.path.join(vgg_16.checkpoints_dir, 'vgg_16.ckpt'),
         slim.get_model_variables('vgg_16'))
 
@@ -561,7 +569,7 @@ def main(args):
 
     with tf.name_scope('cal_loss'):
       loss = calculate_loss(_y, out_layers, anchor_scales_list)
-      regularization_loss = tf.losses.get_regularization_loss(scope='ssd')
+      regularization_loss = tf.losses.get_regularization_loss(scope='(ssd|vgg)')
       total_loss = loss + regularization_loss
 
       tf.summary.scalar('total_loss', total_loss)
@@ -575,7 +583,7 @@ def main(args):
     for item in var_list:
       print(item.name)
     with tf.name_scope('train'):
-      opt, lr_decay_op1, lr_decay_op2 = get_opt(total_loss, 'ssd')
+      opt, lr_decay_op1, lr_decay_op2 = get_opt(total_loss, '(ssd|vgg)')
     print("4. optimizer setup is done.")
 
     init_op = tf.group(tf.global_variables_initializer(),
@@ -585,11 +593,14 @@ def main(args):
     merged = tf.summary.merge_all()
     print("6. summary setup is  done.")
 
+    start = datetime.now()
+    print("Start: ",  start.strftime("%Y-%m-%d_%H-%M-%S"))
+
     config=tf.ConfigProto()
     #config.log_device_placement=True
     config.intra_op_parallelism_threads=FLAGS.num_threads
     with tf.Session(config=config) as sess:
-      init_fn(sess)
+      init_vgg_16_fn(sess)
 
       sess.run(init_op)
 
@@ -657,6 +668,9 @@ def main(args):
 
           print("total_loss: {}".format(total_loss_val))
           print("loss: {}, regularization_loss: {}".format(loss_val, regularization_loss_val))
+
+          current = datetime.now()
+          print('\telapsed:' + str(current - start))
           if itr % 100 == 0:
             #print("input filename:{}".format(_batch[0]))
             data_val, aug_val, label_val, out_val = sess.run([_x, aug, _y, out_layers], feed_dict=feed_dict)
