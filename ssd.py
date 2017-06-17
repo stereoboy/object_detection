@@ -386,10 +386,10 @@ def calculate_loss(ys, outs, anchor_scales_list):
     for i in range(FLAGS.batch_size):
       # use minus for sort
       with tf.name_scope('top_k{}'.format(i)):
-        values, indices = tf.nn.top_k(-(conf_loss[i]*negative_mask[i]), k=negative_num[i])
+        values, indices = tf.nn.top_k((conf_loss[i]*negative_mask[i]), k=negative_num[i])
         #values = utils.tf_Print(FLAGS.dbprint, values, summarize=49, message="values{}:".format(i))
         # recover sign by minus
-        negative_loss.append(tf.reduce_sum(-values))
+        negative_loss.append(tf.reduce_sum(values))
     negative_loss = tf.stack(negative_loss)
 
     negative_loss = utils.tf_Print(FLAGS.dbprint, negative_loss, summarize=49, message="negative_loss:")
