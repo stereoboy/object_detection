@@ -41,14 +41,18 @@ def augment_scale_translate_flip(images, img_size, boxes, flip, batch_size, scal
         crop_size=size
         )
 
-  def flip_left_right(i):
-    image = images[i]
-    flip_or_not = flip[i]
-    return tf.cond(flip_or_not, lambda: tf.reverse(image, axis=[1]), lambda: image)
+#  def flip_left_right(i):
+#    image = images[i]
+#    flip_or_not = flip[i]
+#    return tf.cond(flip_or_not, lambda: tf.reverse(image, axis=[1]), lambda: image)
+#
+#  with tf.name_scope('flip'):
+#    idxs = tf.range(0, batch_size, dtype=tf.int32)
+#    images = tf.map_fn(lambda idx:flip_left_right(idx), idxs, dtype=tf.float32)
 
   with tf.name_scope('flip'):
-    idxs = tf.range(0, batch_size, dtype=tf.int32)
-    images = tf.map_fn(lambda idx:flip_left_right(idx), idxs, dtype=tf.float32)
+    flipeds = tf.reverse(images, axis=[2])
+    images = tf.where(flip, flipeds, images)
   return images
 
 def cal_area(box):
