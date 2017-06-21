@@ -412,15 +412,15 @@ def main(args):
 
     with tf.variable_scope(tf.get_variable_scope()):
       for i in range(FLAGS.num_gpus):
-        with tf.name_scope('gpu%d' % (i)) as scope:
+        with tf.device('/gpu:%d' % i):
+          with tf.name_scope('gpu%d' % (i)) as scope:
 
-          _x, _st, _flip, _y = create_placeholders(anchor_scales)
-          _xs.append(_x)
-          _sts.append(_st)
-          _flips.append(_flip)
-          _ys.append(_y)
+            _x, _st, _flip, _y = create_placeholders(anchor_scales)
+            _xs.append(_x)
+            _sts.append(_st)
+            _flips.append(_flip)
+            _ys.append(_y)
 
-          with tf.device('/gpu:%d' % i):
             with tf.name_scope("augmentation"):
               aug = improc.augment_scale_translate_flip(_x, FLAGS.img_size, _st, _flip, FLAGS.batch_size)
               aug = improc.augment_br_sat_hue_cont(aug)
@@ -453,12 +453,12 @@ def main(args):
               tf.summary.scalar('loss', loss)
               tf.summary.scalar('regularization_loss', regularization_loss)
 
-          print("2. loss setup is done.")
-          tf.get_variable_scope().reuse_variables()
+            print("2. loss setup is done.")
+            tf.get_variable_scope().reuse_variables()
 
-          var_list=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='(yolov2|vgg)')
-          grads = optimizer.compute_gradients(total_loss, var_list=var_list)
-          grads_list.append(grads)
+            var_list=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='(yolov2|vgg)')
+            grads = optimizer.compute_gradients(total_loss, var_list=var_list)
+            grads_list.append(grads)
 
     init_vgg_16_fn = slim.assign_from_checkpoint_fn(
         os.path.join(vgg_16.checkpoints_dir, 'vgg_16.ckpt'),
