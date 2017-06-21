@@ -14,6 +14,7 @@ import vgg_16
 import random
 from PIL import Image
 import image_process as improc
+import multi_gpus as mgs
 
 FLAGS = tf.flags.FLAGS
 #tf.flags.DEFINE_string("device", "/cpu:*", "device")
@@ -251,12 +252,25 @@ def init_anchor_scales(num_layers):
     scale_list.append(scales)
   return scale_list
 
-def base_conv2d(inputs, num_outputs, kernel_size, stride=1, padding='SAME', data_format='NCHW', scope=None):
+def _activation_summary(x):
+  tensor_name = x.op.name
+  tf.summary.histogram(x.op.name + '/activations', x)
+  tf.summary.scalar(x.op.name + '/sparsity', tf.nn.zero_fraction(x))
 
-  out = slim.conv2d(inputs, num_outputs, kernel_size, stride=stride, padding=padding, data_format=data_format, activation_fn=None, normalizer_fn=None, scope=scope)
-  out = slim.batch_norm(out, activation_fn=tf.nn.relu, scope=scope+'_bn', is_training=True)
+def create_placeholders(anchor_infos):
+  _x = tf.placeholder(tf.float32, [None, FLAGS.img_orig_size, FLAGS.img_orig_size, FLAGS.channel], name='raw_input')
+  _st = tf.placeholder(tf.float32, [None, 4], name='scale_translation_seed')
+  _flip = tf.placeholder(tf.bool, [None], name='flip_seed')
 
-  return out
+  with tf.name_scope('raw_label'):
+    _y = []
+    for layer_dim, anchor_scale in anchor_infos:
+      (h_num_grid, w_num_grid) = layer_dim
+      box_dim = (FLAGS.nclass + 4)*len(anchor_scale)
+      ph = tf.placeholder(tf.float32, [FLAGS.batch_size, h_num_grid, w_num_grid, box_dim])
+      _y.append(ph)
+
+  return _x, _st, _flip, _y
 
 def model_ssd(frontend):
 
@@ -364,6 +378,12 @@ def calculate_loss(ys, outs, anchor_scales_list):
     negative_mask = flat_class_y[:, :, 0]
     positive_mask = 1.0 - negative_mask
 
+#    tf.summary.scalar('positive_mask/sparsity', tf.nn.zero_fraction(positive_mask))
+#    tf.summary.scalar('negative_mask/sparsity', tf.nn.zero_fraction(negative_mask))
+
+    positive_mask = utils.tf_Print(FLAGS.dbprint, positive_mask, summarize=400, message="positive_num:")
+    negative_mask = utils.tf_Print(FLAGS.dbprint, negative_mask, summarize=400, message="negative_num:")
+
     positive_num  = tf.reduce_sum(positive_mask, axis=1, name='positive_num')
     negative_num  = tf.reduce_sum(negative_mask, axis=1)
 
@@ -430,111 +450,11 @@ def set_opt():
   boundaries = [40000, 50000]
   values = [FLAGS.learning_rate0, FLAGS.learning_rate1, FLAGS.learning_rate2]
   learning_rate = tf.train.piecewise_constant(global_step, boundaries, values)
-  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
   tf.summary.scalar('learning_rate', learning_rate)
 
   optimizer = tf.train.MomentumOptimizer(learning_rate, FLAGS.momentum)
 #  optimizer = tf.train.AdamOptimizer(learning_rate)
   return optimizer, global_step
-
-def get_opt(loss, scope):
-
-  print('loss:{}'.format(loss))
-
-  var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope)
-
-  print("==get_opt()============================")
-  print(scope)
-  for item in var_list:
-    print(item.name)
-  # Optimizer: set up a variable that's incremented once per batch and
-  # controls the learning rate decay.
-#  batch = tf.Variable(0, dtype=tf.int32)
-  global_step = tf.Variable(0, name='global_step', trainable=False)
-  # Decay once per epoch, using an exponential schedule starting at 0.01.
-#  learning_rate = tf.train.exponential_decay(
-#      FLAGS.learning_rate,                # Base learning rate.
-#      batch,  # Current index into the dataset.
-#      1,          # Decay step.
-#      FLAGS.weight_decay,                # Decay rate.
-#      staircase=True)
-  # Use simple momentum for the optimization.
-
-#  learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
-#                                                 1, 0.998, staircase=True)
-#  learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
-#  lr_decay_op1 = tf.assign(learning_rate, 1e-4)
-#  lr_decay_op2 = tf.assign(learning_rate, 1e-5)
-
-  boundaries = [40000, 50000]
-  values = [FLAGS.learning_rate0, FLAGS.learning_rate1, FLAGS.learning_rate2]
-  learning_rate = tf.train.piecewise_constant(global_step, boundaries, values)
-  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
-  tf.summary.scalar('learning_rate', learning_rate)
-
-  optimizer = tf.train.MomentumOptimizer(learning_rate, FLAGS.momentum)
-#  optimizer = tf.train.AdamOptimizer(learning_rate)
-  opt = optimizer.minimize(loss, var_list=var_list, global_step=global_step)
-
-#  learning_rate = tf.Variable(FLAGS.learning_rate, trainable=False)
-#  learning_rate = utils.tf_Print(learning_rate, [learning_rate], message="learning_rate:")
-#  optimizer = tf.train.AdamOptimizer(learning_rate).minimize(loss, var_list=var_list)
-#
-#  learning_rate = tf.Variable(
-#      float(1e-3), trainable=False, dtype=tf.float32)
-#  lr_decay_op1 = learning_rate.assign(1e-3)
-#  lr_decay_op2 = learning_rate.assign(1e-4)
-#  learning_rate = utils.tf_Print(learning_rate, [learning_rate], message="learning_rate:")
-
-#  learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step,
-#                                                 10, 0.9995, staircase=True)
-#  learning_rate = utils.tf_Print(learning_rate, [learning_rate], message="learning_rate:")
-#  optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss,
-#                                                                var_list=var_list,
-#                                                                global_step=global_step)
-
-  return opt
-#  return tf.train.AdamOptimizer(0.0001).minimize(loss)
-#  optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate, beta1=FLAGS.beta1)
-#  grads = optimizer.compute_gradients(loss, var_list=var_list)
-#  return optimizer.apply_gradients(grads)
-
-def average_gradients(tower_grads):
-  """Calculate the average gradient for each shared variable across all towers.
-
-  Note that this function provides a synchronization point across all towers.
-
-  Args:
-    tower_grads: List of lists of (gradient, variable) tuples. The outer list
-      is over individual gradients. The inner list is over the gradient
-      calculation for each tower.
-  Returns:
-     List of pairs of (gradient, variable) where the gradient has been averaged
-     across all towers.
-  """
-  average_grads = []
-  for grad_and_vars in zip(*tower_grads):
-    # Note that each grad_and_vars looks like the following:
-    #   ((grad0_gpu0, var0_gpu0), ... , (grad0_gpuN, var0_gpuN))
-    grads = []
-    for g, _ in grad_and_vars:
-      # Add 0 dimension to the gradients to represent the tower.
-      expanded_g = tf.expand_dims(g, 0)
-
-      # Append on a 'tower' dimension which we will average over below.
-      grads.append(expanded_g)
-
-    # Average over the 'tower' dimension.
-    grad = tf.concat(axis=0, values=grads)
-    grad = tf.reduce_mean(grad, 0)
-
-    # Keep in mind that the Variables are redundant because they are shared
-    # across towers. So .. we will just return the first tower's pointer to
-    # the Variable.
-    v = grad_and_vars[0][1]
-    grad_and_var = (grad, v)
-    average_grads.append(grad_and_var)
-  return average_grads
 
 def main(args):
 
@@ -550,6 +470,11 @@ def main(args):
     os.makedirs(FLAGS.log_dir)
 
   vgg_16.setup_vgg_16()
+
+  out_layer_dims = [(38, 38), (19, 19), (10, 10), (5, 5), (3, 3), (1, 1)]
+  anchor_scales_list = init_anchor_scales(len(out_layer_dims))
+  anchor_infos = list(zip(out_layer_dims, anchor_scales_list))
+  print(list(anchor_infos))
 
   _R_MEAN = 123.68
   _G_MEAN = 116.78
@@ -571,26 +496,23 @@ def main(args):
     _flips = []
     _ys = []
     grads_list = []
+
     with tf.variable_scope(tf.get_variable_scope()):
       for i in range(FLAGS.num_gpus):
-        with tf.name_scope('gpu%d' % (i)) as scope:
+        with tf.device('/gpu:%d' % i):
+          with tf.name_scope('gpu%d' % (i)) as scope:
+            _x, _st, _flip, _y = create_placeholders(anchor_infos)
+            _xs.append(_x)
+            _sts.append(_st)
+            _flips.append(_flip)
+            _ys.append(_y)
 
-          _x = tf.placeholder(tf.float32, [None, FLAGS.img_orig_size, FLAGS.img_orig_size, FLAGS.channel], name='raw_input')
-          _st = tf.placeholder(tf.float32, [None, 4], name='scale_translation_seed')
-          _flip = tf.placeholder(tf.bool, [None], name='flip_seed')
-
-          _xs.append(_x)
-          _sts.append(_st)
-          _flips.append(_flip)
-
-          with tf.name_scope('augmentation'):
-            aug = improc.augment_scale_translate_flip(_x, FLAGS.img_size, _st, _flip, FLAGS.batch_size)
-            aug = improc.augment_br_sat_hue_cont(aug)
-            with tf.name_scope('mean_subtraction'):
-              mean = tf.constant(np.array((_R_MEAN, _G_MEAN, _B_MEAN), dtype=np.float32))
-              x = tf.cast(aug, dtype=tf.float32) - mean
-            x = improc.augment_gaussian_noise(x)
-          with tf.device('/gpu:%d' % i):
+            with tf.name_scope('augmentation'):
+              aug = improc.augment_scale_translate_flip(_x, FLAGS.img_size, _st, _flip, FLAGS.batch_size)
+              aug = improc.augment_br_sat_hue_cont(aug)
+              with tf.name_scope('mean_subtraction'):
+                x = tf.cast(aug, dtype=tf.float32) - mean
+              x = improc.augment_gaussian_noise(x)
 
             x = tf.transpose(x, perm=[0, 3, 1, 2], name='augmented_input')
 
@@ -606,69 +528,58 @@ def main(args):
             vgg_outs = end_points[scope + 'vgg_16/conv5/conv5_3']
             out_layers.append(vgg_outs)
 
-
-          with tf.device('/gpu:%d' % i):
             with tf.variable_scope('ssd'):
               layers = model_ssd(vgg_outs)
 
             out_layers.extend(layers)
             print('layers', layers)
 
-            if i == 0:
-              anchor_scales_list = init_anchor_scales(len(out_layers))
             with tf.variable_scope('ssd_backend'):
               out_layers = model_backend(out_layers, anchor_scales_list)
 
-            if i == 0:
-              layer_dims = [(int(layer.get_shape()[1]), int(layer.get_shape()[2])) for layer in out_layers]
+            for j in range(len(out_layers)):
+              layer_dim, predefined_dim = out_layers[j].get_shape(), out_layer_dims[j]
+              layer_w, predefined_w = int(layer_dim[1]), predefined_dim[0]
+              assert layer_w == predefined_w, "out_layer{} dims {} through convs and predefined setup {} should have same values".format(j, layer_w, predefined_w)
 
-            if i == 0:
-              anchor_infos = list(zip(layer_dims, anchor_scales_list))
-              print(list(anchor_infos))
             print("[{}] 1. network setup is done.".format(i))
 
-            with tf.name_scope('raw_label'):
-              _y = []
-              for layer_dim, anchor_scale in anchor_infos:
-                (h_num_grid, w_num_grid) = layer_dim
-                box_dim = (FLAGS.nclass + 4)*len(anchor_scale)
-                ph = tf.placeholder(tf.float32, [FLAGS.batch_size, h_num_grid, w_num_grid, box_dim])
-                _y.append(ph)
-            _ys.append(_y)
-            print("[{}] 2. label setup is done.".format(i))
+            with tf.name_scope('cal_loss'):
+              loss = calculate_loss(_y, out_layers, anchor_scales_list)
+              regularization_loss = tf.losses.get_regularization_loss(scope=scope)
+              total_loss = loss + regularization_loss
 
-          with tf.name_scope('cal_loss'):
-            loss = calculate_loss(_y, out_layers, anchor_scales_list)
-            regularization_loss = tf.losses.get_regularization_loss(scope=scope)
-            total_loss = loss + regularization_loss
+              tf.summary.scalar('total_loss', total_loss)
+              tf.summary.scalar('loss', loss)
+              tf.summary.scalar('regularization_loss', regularization_loss)
+            print("[{}] 2. loss setup is done.".format(i))
 
-            tf.summary.scalar('total_loss', total_loss)
-            tf.summary.scalar('loss', loss)
-            tf.summary.scalar('regularization_loss', regularization_loss)
-          print("[{}] 3. loss setup is done.".format(i))
+            print("-------------------------------------------")
+            tf.get_variable_scope().reuse_variables()
 
-          print("-------------------------------------------__")
-          tf.get_variable_scope().reuse_variables()
-
-          grads = optimizer.compute_gradients(total_loss)
-          print(grads)
-          grads_list.append(grads)
-
+            var_list=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='(ssd|vgg)')
+            grads = optimizer.compute_gradients(total_loss, var_list=var_list)
+            grads_list.append(grads)
 
     init_vgg_16_fn = slim.assign_from_checkpoint_fn(
         os.path.join(vgg_16.checkpoints_dir, 'vgg_16.ckpt'),
         slim.get_model_variables('vgg_16'))
 
     epoch_step, epoch_update = utils.get_epoch()
+
     var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
-    print("==get_opt()============================")
     for item in var_list:
       print(item.name)
+
     with tf.name_scope('train'):
-      avg_grads = average_gradients(grads_list)
+      avg_grads = mgs.average_gradients(grads_list)
       apply_gradient_op = optimizer.apply_gradients(avg_grads, global_step=global_step)
 
-      #opt, global_step = set_opt('(ssd|vgg)')
+      # Add histograms for trainable variables.
+      for var, grad in avg_grads:
+        tf.summary.histogram(var.op.name, var)
+        tf.summary.histogram(var.op.name + '/gradients', grad)
+
     print("4. optimizer setup is done.")
 
     init_op = tf.group(tf.global_variables_initializer(),
@@ -682,7 +593,8 @@ def main(args):
     print("Start: ",  start.strftime("%Y-%m-%d_%H-%M-%S"))
 
     config=tf.ConfigProto()
-    #config.log_device_placement=True
+    config.log_device_placement=True
+    config.allow_soft_placement = True
     config.intra_op_parallelism_threads=FLAGS.num_threads
     with tf.Session(config=config) as sess:
       init_vgg_16_fn(sess)
@@ -742,10 +654,10 @@ def main(args):
               feed_dict[ph] = feed_annots
 
           summary, _ = sess.run([merged, apply_gradient_op], feed_dict=feed_dict)
-#          print("test after:", test.eval())
 
           current = datetime.now()
           print('\telapsed:' + str(current - start))
+
           if itr % 100 == 0:
             #print("input filename:{}".format(_batch[0]))
             data_val, aug_val, label_val, out_val = sess.run([_x, aug, _y, out_layers], feed_dict=feed_dict)
@@ -774,9 +686,9 @@ def main(args):
             cv2.imwrite(img_save_path, improc.img_listup([orig_img, aug_img, out_img]))
 
           writer.add_summary(summary, step)
-          key = cv2.waitKey(5)
-          if key == 27:
-            sys.exit()
+#          key = cv2.waitKey(5)
+#          if key == 27:
+#            sys.exit()
 
             #compare(feed_annots_list[0], out_val[0])
 
