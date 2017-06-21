@@ -559,7 +559,6 @@ def main(args):
           summary, _ = sess.run([merged, apply_gradient_op], feed_dict=feed_dict)
           writer.add_summary(summary, step)
 
-          sys.exit()
           current = datetime.now()
           print('\telapsed:' + str(current - start))
 
