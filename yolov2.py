@@ -44,7 +44,7 @@ tf.flags.DEFINE_string("filelist", "filelist.json", "filelist.json")
 tf.flags.DEFINE_string("balanced_filelist", "balanced.json", "normalized filelist")
 tf.flags.DEFINE_string("save_dir", "yolov2_checkpoints", "dir for checkpoints")
 tf.flags.DEFINE_string("data_dir", "../../data/VOCdevkit/VOC2012/", "base directory for data")
-tf.flags.DEFINE_string("log_dir", "yolov2_checkpoints", "directory for log")
+tf.flags.DEFINE_string("log_dir", "yolov2_logs", "directory for log")
 tf.flags.DEFINE_string("log_name", "yolov2", "directory for log")
 tf.flags.DEFINE_string("train_img_dir", "./train_img", "base directory for data")
 tf.flags.DEFINE_string("train_annot_dir", "./train_annot", "base directory for data")
@@ -85,10 +85,10 @@ def visualization(img, annot, anchor_scales, idx2obj, palette, options=['draw_an
           nw, nh = np.exp(reg_nw)*anchor_w, np.exp(reg_nh)*anchor_h
 
           cwh = ((cx, cy), (nw, nh))
-          print(cwh)
-          print(anchor_w, anchor_h)
-          print(reg_cx, reg_cy, reg_nw, reg_nh)
-          print('--------------------------------------')
+#          print(cwh)
+#          print(anchor_w, anchor_h)
+#          print(reg_cx, reg_cy, reg_nw, reg_nh)
+#          print('--------------------------------------')
           ((x1, y1), (x2, y2)) = improc.cvt_cwh2bbox(cwh)
           name = name + '_%d'%(i) + '_%.2f'%(np.max(class_pred))
 
@@ -349,7 +349,7 @@ def calculate_loss(y, out, anchor_scales):
 
   return loss, out_post
 
-def get_opt(loss, scope):
+def get_opt(loss, scope, size_of_epoch):
 
   print('loss:{}'.format(loss))
 
@@ -361,16 +361,15 @@ def get_opt(loss, scope):
     print(item.name)
 
   global_step = tf.Variable(0, name='global_step', trainable=False)
-  learning_rate = tf.Variable(FLAGS.learning_rate0, trainable=False)
-  lr_decay_op1 = tf.assign(learning_rate, FLAGS.learning_rate1)
-  lr_decay_op2 = tf.assign(learning_rate, FLAGS.learning_rate2)
-  learning_rate = tf.Print(learning_rate, [learning_rate], message="learning_rate:")
-
-#  optimizer = tf.train.MomentumOptimizer(FLAGS.learning_rate, FLAGS.momentum)
-  optimizer = tf.train.AdamOptimizer(learning_rate)
+  boundaries = [60*size_of_epoch, 90*size_of_epoch]
+  values = [FLAGS.learning_rate0, FLAGS.learning_rate1, FLAGS.learning_rate2]
+  learning_rate = tf.train.piecewise_constant(global_step, boundaries, values)
+  tf.summary.scalar('learning_rate', learning_rate)
+  optimizer = tf.train.MomentumOptimizer(learning_rate, FLAGS.momentum)
+#  optimizer = tf.train.AdamOptimizer(learning_rate)
   opt = optimizer.minimize(loss, var_list=var_list, global_step=global_step)
 
-  return opt, lr_decay_op1, lr_decay_op2
+  return opt, 0, 0 
 
 def main(args):
 
@@ -435,7 +434,7 @@ def main(args):
 
     with tf.name_scope('cal_loss'):
       loss, out_post = calculate_loss(_y, out, anchor_scales)
-      regularization_loss = tf.losses.get_regularization_loss(scope='yolov2')
+      regularization_loss = tf.losses.get_regularization_loss(scope='(vgg|yolov2)')
       total_loss = loss + regularization_loss
 
     tf.summary.scalar('total_loss', total_loss)
@@ -451,7 +450,7 @@ def main(args):
     for item in var_list:
       print(item.name)
     with tf.name_scope('train'):
-      opt, lr_decay_op1, lr_decay_op2 = get_opt(total_loss, 'yolov2')
+      opt, lr_decay_op1, lr_decay_op2 = get_opt(total_loss, '(vgg|yolov2)', len(filelist))
     print("3. optimizer setup is done.")
 
     init_op = tf.group(tf.global_variables_initializer(),
@@ -490,7 +489,7 @@ def main(args):
 #    print('....:', tensor[0].get_shape())
 
     config=tf.ConfigProto()
-    #config.log_device_placement=True
+    config.log_device_placement=True
     config.intra_op_parallelism_threads=FLAGS.num_threads
     with tf.Session(config=config) as sess:
       init_fn(sess)
