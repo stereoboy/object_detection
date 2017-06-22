@@ -518,7 +518,7 @@ def main(args):
 
             print("[{}] 0. input image setup is done.".format(i))
 
-            with slim.arg_scope(vgg_16.vgg_arg_scope()):
+            with slim.arg_scope(vgg_16.vgg_arg_scope(FLAGS.weight_decay)):
               _, end_points = vgg_16.vgg_16_base(x)
 
             out_layers = []

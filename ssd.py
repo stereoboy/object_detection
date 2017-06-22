@@ -528,7 +528,7 @@ def main(args):
 
     print("0. input image setup is done.")
 
-    with slim.arg_scope(vgg_16.vgg_arg_scope()):
+    with slim.arg_scope(vgg_16.vgg_arg_scope(FLAGS.weight_decay)):
       _, end_points = vgg_16.vgg_16_base(x)
 
     out_layers = []
@@ -699,9 +699,9 @@ def main(args):
             cv2.imwrite(img_save_path, improc.img_listup([orig_img, aug_img, out_img]))
 
           writer.add_summary(summary, step)
-          key = cv2.waitKey(5)
-          if key == 27:
-            sys.exit()
+#          key = cv2.waitKey(5)
+#          if key == 27:
+#            sys.exit()
 
             #compare(feed_annots_list[0], out_val[0])
 
