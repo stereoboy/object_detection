@@ -569,7 +569,7 @@ def main(args):
 
     with tf.name_scope('cal_loss'):
       loss = calculate_loss(_y, out_layers, anchor_scales_list)
-      regularization_loss = tf.losses.get_regularization_loss(scope='(ssd|vgg)')
+      regularization_loss = tf.losses.get_regularization_loss(scope='(ssd|vgg_16)')
       total_loss = loss + regularization_loss
 
       tf.summary.scalar('total_loss', total_loss)
@@ -583,7 +583,7 @@ def main(args):
     for item in var_list:
       print(item.name)
     with tf.name_scope('train'):
-      opt, lr_decay_op1, lr_decay_op2 = get_opt(total_loss, '(ssd|vgg)')
+      opt, lr_decay_op1, lr_decay_op2 = get_opt(total_loss, '(ssd|vgg_16)')
     print("4. optimizer setup is done.")
 
     init_op = tf.group(tf.global_variables_initializer(),
